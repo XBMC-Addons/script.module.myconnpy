@@ -1,42 +1,42 @@
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009,2010, Oracle and/or its affiliates. All rights reserved.
-# Use is subject to license terms. (See COPYING)
+# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
 
+# MySQL Connector/Python is licensed under the terms of the GPLv2
+# <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
+# MySQL Connectors. There are special exceptions to the terms and
+# conditions of the GPLv2 as it is applied to this software, see the
+# FOSS License Exception
+# <http://www.mysql.com/about/legal/licensing/foss-exception.html>.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation.
-# 
-# There are special exceptions to the terms and conditions of the GNU
-# General Public License as it is applied to this software. View the
-# full text of the exception in file EXCEPTIONS-CLIENT in the directory
-# of this software distribution or see the FOSS License Exception at
-# www.mysql.com.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
 """Cursor classes
 """
 
 import sys
-from collections import deque
 import weakref
 import re
+import itertools
 
-import constants
-import protocol
-import errors
-import utils
+from mysql.connector import errors
 
 RE_SQL_COMMENT = re.compile("\/\*.*\*\/")
-RE_SQL_INSERT_VALUES = re.compile(r'\sVALUES\s*(\(.*\))', re.I)
+RE_SQL_ON_DUPLICATE = re.compile(r'\s*ON DUPLICATE KEY.*$')
+RE_SQL_INSERT_VALUES = re.compile(r'.*VALUES\s*(\(.*\)).*', re.I | re.M | re.S)
 RE_SQL_INSERT_STMT = re.compile(r'INSERT\s+INTO', re.I)
+RE_SQL_SPLIT_STMTS = re.compile(
+    r''';(?=(?:[^"'`]*["'`][^"'`]*["'`])*[^"'`]*$)''')
 
 class CursorBase(object):
     """
@@ -48,12 +48,10 @@ class CursorBase(object):
     """
     
     def __init__(self):
-        self.description = None
-        self.rowcount = -1
+        self._description = None
+        self._rowcount = -1
+        self._last_insert_id = None
         self.arraysize = 1
-    
-    def __del__(self):
-        self.close()
     
     def callproc(self, procname, args=()):
         pass
@@ -87,39 +85,80 @@ class CursorBase(object):
     
     def reset(self):
         pass
+
+    @property
+    def description(self):
+        """Returns description of columns in a result
+
+        This property returns a list of tuples describing the columns in
+        in a result set. A tuple is described as follows::
+
+                (column_name,
+                 type,
+                 None,
+                 None,
+                 None,
+                 None,
+                 null_ok,
+                 column_flags)  # Addition to PEP-249 specs
+
+        Returns a list of tuples.
+        """
+        return self._description
+
+    @property
+    def rowcount(self):
+        """Returns the number of rows produced or affected
         
+        This property returns the number of rows produced by queries
+        such as a SELECT, or affected rows when executing DML statements
+        like INSERT or UPDATE.
+        
+        Note that for non-buffered cursors it is impossible to know the
+        number of rows produced before having fetched them all. For those,
+        the number of rows will be -1 right after execution, and
+        incremented when fetching rows.
+        
+        Returns an integer.
+        """
+        return self._rowcount
+
+    @property
+    def lastrowid(self):
+        """Returns the value generated for an AUTO_INCREMENT column
+        
+        Returns the value generated for an AUTO_INCREMENT column by
+        the previous INSERT or UPDATE statement or None when there is
+        no such value available.
+        
+        Returns a long value or None.
+        """
+        return self._last_insert_id
+
 class MySQLCursor(CursorBase):
-    """
-    Default cursor which fetches all rows and stores it for later
-    usage. It uses the converter set for the MySQLConnection to map
-    MySQL types to Python types automatically.
+    """Default cursor for interacting with MySQL
     
-    This class should be inherited whenever other functionallity is
+    This cursor will execute statements and handle the result. It will
+    not automatically fetch all rows.
+    
+    MySQLCursor should be inherited whenever other functionallity is
     required. An example would to change the fetch* member functions
     to return dictionaries instead of lists of values.
     
-    Implements the Python Database API Specification v2.0.
-    
-    Possible parameters are:
-    
-    db
-        A MySQLConnection instance.
+    Implements the Python Database API Specification v2.0 (PEP-249)
     """
-
-    def __init__(self, db=None):
+    def __init__(self, connection=None):
         CursorBase.__init__(self)
-        self.db = None
-        self._more_results = False
-        self._results = deque()
+        self._connection = None
+        self._stored_results = []
         self._nextrow = (None, None)
-        self.lastrowid = None
         self._warnings = None
         self._warning_count = 0
         self._executed = None
-        self._have_result = False
-        self._raise_on_warnings = True
-        if db is not None:
-            self.set_connection(db)
+        self._executed_list = []
+        
+        if connection is not None:
+            self._set_connection(connection)
     
     def __iter__(self):
         """
@@ -128,27 +167,31 @@ class MySQLCursor(CursorBase):
         """
         return iter(self.fetchone, None)
         
-    def set_connection(self, db):
+    def _set_connection(self, connection):
         try:
-            if isinstance(db.protocol,protocol.MySQLProtocol):
-                self.db = weakref.ref(db)
-                if self not in self.db().cursors:
-                    self.db().cursors.append(self)
-        except:
+            self._connection = weakref.proxy(connection)
+            self._connection._protocol
+        except (AttributeError, TypeError):
             raise errors.InterfaceError(errno=2048)
 
     def _reset_result(self):
-        self.rowcount = -1
+        self._rowcount = -1
+        self._lastrowid = None
         self._nextrow = (None, None)
-        self._have_result = False
-        try:
-            self.db().unread_result = False
-        except:
-            pass
+        self._stored_results = []
         self._warnings = None
         self._warning_count = 0
-        self.description = ()
+        self._description = None
+        self._executed = None
+        self._executed_list = []
         self.reset()
+
+    def _have_unread_result(self):
+        """Check whether there is an unread result"""
+        try:
+            return self._connection.unread_result
+        except AttributeError:
+            return False
         
     def next(self):
         """
@@ -164,28 +207,25 @@ class MySQLCursor(CursorBase):
         return row
     
     def close(self):
-        """
-        Close the cursor, disconnecting it from the MySQL object.
+        """Close the cursor
         
-        Returns True when succesful, otherwise False.
+        Returns True when successful, otherwise False.
         """
-        if self.db is None:
+        if self._connection is None:
             return False
-        
-        try:
-            self._reset_result()
-            self.db().remove_cursor(self)
-            self.db = None
-        except:
-            return False
+        if self._have_unread_result():
+            raise errors.InternalError("Unread result found.")
+
+        self._reset_result()
+        self._connection = None
         
         return True
-    
+
     def _process_params_dict(self, params):
         try:
-            to_mysql = self.db().converter.to_mysql
-            escape = self.db().converter.escape
-            quote = self.db().converter.quote
+            to_mysql = self._connection.converter.to_mysql
+            escape = self._connection.converter.escape
+            quote = self._connection.converter.quote
             res = {}
             for k,v in params.items():
                 c = v
@@ -216,14 +256,9 @@ class MySQLCursor(CursorBase):
         
         try:
             res = params
-
-            to_mysql = self.db().converter.to_mysql
-            escape = self.db().converter.escape
-            quote = self.db().converter.quote
-
-            res = map(to_mysql,res)
-            res = map(escape,res)
-            res = map(quote,res)
+            res = map(self._connection.converter.to_mysql,res)
+            res = map(self._connection.converter.escape,res)
+            res = map(self._connection.converter.quote,res)
         except StandardError, e:
             raise errors.ProgrammingError(
                 "Failed processing format-parameters; %s" % e)
@@ -234,12 +269,11 @@ class MySQLCursor(CursorBase):
     def _row_to_python(self, rowdata, desc=None):
         res = ()
         try:
-            to_python = self.db().converter.to_python
             if not desc:
                 desc = self.description
             for idx,v in enumerate(rowdata):
                 flddsc = desc[idx]
-                res += (to_python(flddsc, v),)
+                res += (self._connection.converter.to_python(flddsc, v),)
         except StandardError, e:
             raise errors.InterfaceError(
                 "Failed converting row to Python types; %s" % e)
@@ -252,47 +286,83 @@ class MySQLCursor(CursorBase):
         """Handles result of execute() when there is no result set
         """
         try:
-            self.rowcount = res['affected_rows']
-            self.lastrowid = res['insert_id']
+            self._rowcount = res['affected_rows']
+            self._last_insert_id = res['insert_id']
             self._warning_count = res['warning_count']
-            if self.db().get_warnings is True and self._warning_count:
-                self._warnings = self._fetch_warnings()
-            self._set_more_results(res['server_status'])
-        except errors.Error:
-            raise
-        except StandardError, e:
+        except (KeyError, TypeError), err:
             raise errors.ProgrammingError(
-                "Failed handling non-resultset; %s" % e)
-    
+                "Failed handling non-resultset; %s" % err)
+        
+        if self._connection.get_warnings is True and self._warning_count:
+                self._warnings = self._fetch_warnings()
+        
     def _handle_resultset(self):
         pass
     
-    def _handle_result(self, res):
-        if isinstance(res, dict):
-            self.db().unread_result = False
-            self._have_result = False
-            self._handle_noresultset(res)
-        else:
-            self.description = res[1]
-            self.db().unread_result = True
-            self._have_result = True
-            self._handle_resultset()
-        
-    def execute(self, operation, params=None):
+    def _handle_result(self, result):
         """
-        Executes the given operation. The parameters given through params
-        are used to substitute %%s in the operation string.
+        Handle the result after a command was send. The result can be either
+        an OK-packet or a dictionary containing column/eof information.
+        
+        Raises InterfaceError when result is not a dict() or result is
+        invalid.
+        """
+        if not isinstance(result, dict):
+            raise errors.InterfaceError('Result was not a dict()')
+        
+        if 'columns' in result:
+            # Weak test, must be column/eof information
+            self._description = result['columns']
+            self._connection.unread_result = True
+            self._handle_resultset()
+        elif 'affected_rows' in result:
+            # Weak test, must be an OK-packet
+            self._connection.unread_result = False
+            self._handle_noresultset(result)
+        else:
+            raise errors.InterfaceError('Invalid result')
+    
+    def _execute_iter(self, query_iter):
+        """Generator returns MySQLCursor objects for multiple statements
+        
+        This method is only used when multiple statements are executed
+        by the execute() method. It uses itertools.izip to iterate over the
+        given query_iter (result of MySQLConnection.cmd_query_iter()) and
+        the list of statements that were executed.
+        
+        Yields a MySQLCursor instance.
+        """
+        if not self._executed_list:
+            self._executed_list = RE_SQL_SPLIT_STMTS.split(self._executed)
+        
+        for result, stmt in itertools.izip(query_iter,
+                                           iter(self._executed_list)):
+            self._reset_result()
+            self._handle_result(result)
+            self._executed = stmt
+            yield self
+    
+    def execute(self, operation, params=None, multi=False):
+        """Executes the given operation
+        
+        Executes the given operation substituting any markers with
+        the given parameters.
+        
         For example, getting all rows where id is 5:
           cursor.execute("SELECT * FROM t1 WHERE id = %s", (5,))
         
-        If warnings where generated, and db.get_warnings is True, then
+        The multi argument should be set to True when executing multiple
+        statements in one operation. If not set and multiple results are
+        found, an InterfaceError will be raised.
+        
+        If warnings where generated, and connection.get_warnings is True, then
         self._warnings will be a list containing these warnings.
         
-        Raises exceptions when any error happens.
+        Returns an iterator when multi is True, otherwise None.
         """
         if not operation:
-            return 0
-        if self.db().unread_result is True:
+            return
+        if self._have_unread_result():
             raise errors.InternalError("Unread result found.")
         
         self._reset_result()
@@ -300,105 +370,106 @@ class MySQLCursor(CursorBase):
         
         try:
             if isinstance(operation, unicode):
-                operation = operation.encode(self.db().charset_name)
-            
-            if params is not None:
-                try:
-                    stmt = operation % self._process_params(params)
-                except TypeError:
-                    raise errors.ProgrammingError(
-                        "Wrong number of arguments during string formatting")
-            else:
-                stmt = operation
-            
-            res = self.db().protocol.cmd_query(stmt)
-            self._handle_result(res)
-        except (UnicodeDecodeError,UnicodeEncodeError), e:
+                operation = operation.encode(self._connection.charset)
+        except (UnicodeDecodeError, UnicodeEncodeError), e:
             raise errors.ProgrammingError(str(e))
-        except errors.Error:
-            raise
-        except StandardError, e:
-            raise errors.InterfaceError, errors.InterfaceError(
-              "Failed executing the operation; %s" % e), sys.exc_info()[2]
+            
+        if params is not None:
+            try:
+                stmt = operation % self._process_params(params)
+            except TypeError:
+                raise errors.ProgrammingError(
+                    "Wrong number of arguments during string formatting")
+        else:
+            stmt = operation
+        
+        if multi:
+            self._executed = stmt
+            self._executed_list = []
+            return self._execute_iter(self._connection.cmd_query_iter(stmt))
         else:
             self._executed = stmt
-            return self.rowcount
-            
-        return 0
-    
+            try:
+                self._handle_result(self._connection.cmd_query(stmt))
+            except errors.InterfaceError, err:
+                if self._connection._have_next_result:
+                    raise errors.InterfaceError(
+                        "Use multi=True when executing multiple statements")
+                raise
+            return None
+
     def executemany(self, operation, seq_params):
-        """Loops over seq_params and calls execute()
+        """Execute the given operation multiple times
+        
+        The executemany() method will execute the operation iterating
+        over the list of parameters in seq_params.
+        
+        Example: Inserting 3 new employees and their phone number
+        
+        data = [
+            ('Jane','555-001'),
+            ('Joe', '555-001'),
+            ('John', '555-003')
+            ]
+        stmt = "INSERT INTO employees (name, phone) VALUES ('%s','%s')"
+        cursor.executemany(stmt, data)
         
         INSERT statements are optimized by batching the data, that is
         using the MySQL multiple rows syntax.
+        
+        Results are discarded. If they are needed, consider looping over
+        data using the execute() method.
         """
         if not operation:
-            return 0
-        if self.db().unread_result is True:
+            return
+        if self._have_unread_result():
             raise errors.InternalError("Unread result found.")
+        elif len(RE_SQL_SPLIT_STMTS.split(operation)) > 1:
+            raise errors.InternalError(
+                "executemany() does not support multiple statements")
         
         # Optimize INSERTs by batching them
         if re.match(RE_SQL_INSERT_STMT,operation):
-            opnocom = re.sub(RE_SQL_COMMENT,'',operation)
-            m = re.search(RE_SQL_INSERT_VALUES,opnocom)
+            tmp = re.sub(RE_SQL_ON_DUPLICATE, '',
+                         re.sub(RE_SQL_COMMENT, '', operation))
+            m = re.search(RE_SQL_INSERT_VALUES, tmp)
+            if not m:
+                raise errors.InterfaceError(
+                    "Failed rewriting statement for multi-row INSERT. "
+                    "Check SQL syntax."
+                )
             fmt = m.group(1)
             values = []
             for params in seq_params:
                 values.append(fmt % self._process_params(params))
-            operation = operation.replace(m.group(1),','.join(values),1)
-            self.execute(operation)
-        else:
-            rowcnt = 0
-            try:
-                for params in seq_params:
-                    self.execute(operation, params)
-                    if self._have_result:
-                        self.fetchall()
-                    rowcnt += self.rowcount
-            except (ValueError,TypeError), e:
-                raise errors.InterfaceError(
-                    "Failed executing the operation; %s" % e)
-            except:
-                # Raise whatever execute() raises
-                raise
-            self.rowcount = rowcnt
-        return self.rowcount
-    
-    def _set_more_results(self, flags):
-        flag = constants.ServerFlag.MORE_RESULTS_EXISTS
-        self._more_results = constants.flag_is_set(flag, flags)
-    
-    def next_resultset(self):
-        """Gets next result after executing multiple statements
-        
-        When more results are available, this function will reset the
-        current result and advance to the next set.
-        
-        This is useful when executing multiple statements. If you need
-        to retrieve multiple results after executing a stored procedure
-        using callproc(), use next_proc_resultset() instead.
-        """
-        if self._more_results is True:
-            buf = self.db().protocol.conn.recv()
-            res = self.db().protocol.handle_cmd_result(buf)
-            self._reset_result()
-            self._handle_result(res)
-            return True
-        
-        return None
-        
-    def next_proc_resultset(self):
-        """Get the next result set after calling a stored procedure
-        
-        Returns a MySQLCursorBuffered-object"""
+            operation = operation.replace(m.group(1), ','.join(values), 1)
+            return self.execute(operation)
+            
+        rowcnt = 0
         try:
-            return self._results.popleft()
-        except IndexError:
-            return None
+            for params in seq_params:
+                self.execute(operation, params)
+                if self.with_rows and self._have_unread_result():
+                    self.fetchall()
+                rowcnt += self._rowcount
+        except (ValueError, TypeError), err:
+            raise errors.InterfaceError(
+                "Failed executing the operation; %s" % err)
         except:
+            # Raise whatever execute() raises
             raise
+        self._rowcount = rowcnt
+
+    def stored_results(self):
+        """Returns an iterator for stored results
         
-        return None
+        This method returns an iterator over results which are stored when
+        callproc() is called. The iterator will provide MySQLCursorBuffered
+        instances.
+        
+        Returns a iterator.
+        """
+        return iter(self._stored_results)
 
     def callproc(self, procname, args=()):
         """Calls a stored procedue with the given arguments
@@ -416,52 +487,63 @@ class MySQLCursor(CursorBase):
 
           2) Executing in Python:
           args = (5,5,0) # 0 is to hold pprod
-          cursor.callproc(multiply, args)
+          cursor.callproc('multiply', args)
           print cursor.fetchone()
 
-          The last print should output ('5', '5', 25L)
-
         Does not return a value, but a result set will be
-        available when the CALL-statement execute succesfully.
+        available when the CALL-statement execute successfully.
         Raises exceptions when something is wrong.
         """
-        argfmt = "@_%s_arg%d"
-        self._results = deque()
+        if not procname or not isinstance(procname, str):
+            raise ValueError("procname must be a string")
 
+        if not isinstance(args, (tuple, list)):
+            raise ValueError("args must be a sequence")
+
+        argfmt = "@_%s_arg%d"
+        self._stored_results = []
+
+        results = []
         try:
-            procargs = self._process_params(args)
             argnames = []
 
-            for idx,arg in enumerate(procargs):
-                argname = argfmt % (procname, idx+1)
-                argnames.append(argname)
-                setquery = "SET %s=%%s" % argname
-                self.execute(setquery, (arg,))
+            if args:
+                for idx,arg in enumerate(args):
+                    argname = argfmt % (procname, idx+1)
+                    argnames.append(argname)
+                    self.execute("SET %s=%%s" % (argname), (arg,))
 
             call = "CALL %s(%s)" % (procname,','.join(argnames))
-            res = self.db().protocol.cmd_query(call)
             
-            while not isinstance(res, dict):
-                tmp = MySQLCursorBuffered(self.db())
-                tmp.description = res[1]
-                tmp._handle_resultset()
-                self._results.append(tmp)
-                buf = self.db().protocol.conn.recv()
-                res = self.db().protocol.handle_cmd_result(buf)
-            try:
+            for result in self._connection.cmd_query_iter(call):
+                if 'columns' in result:
+                    tmp = MySQLCursorBuffered(self._connection._get_self())
+                    tmp._handle_result(result)
+                    results.append(tmp)
+
+            if argnames:
                 select = "SELECT %s" % ','.join(argnames)
                 self.execute(select)
+                self._stored_results = results
                 return self.fetchone()
-            except:
-                raise
+            else:
+                self._stored_results = results
+                return ()
 
         except errors.Error:
             raise
         except StandardError, e:
             raise errors.InterfaceError(
                 "Failed calling stored routine; %s" % e)
-    
+
     def getlastrowid(self):
+        """Returns the value generated for an AUTO_INCREMENT column
+        
+        This method is kept for backward compatibility. Please use the
+        property lastrowid instead.
+        
+        Returns a long value or None.
+        """
         return self.lastrowid
         
     def _fetch_warnings(self):
@@ -473,15 +555,15 @@ class MySQLCursor(CursorBase):
         """
         res = []
         try:
-            c = self.db().cursor()
+            c = self._connection.cursor()
             cnt = c.execute("SHOW WARNINGS")
             res = c.fetchall()
             c.close()
         except StandardError, e:
-            raise errors.InterfaceError(
-                "Failed getting warnings; %s" % e)
+            raise errors.InterfaceError, errors.InterfaceError(
+                "Failed getting warnings; %s" % e), sys.exc_info()[2]
         
-        if self.db().raise_on_warnings is True:
+        if self._connection.raise_on_warnings is True:
             msg = '; '.join([ "(%s) %s" % (r[1],r[2]) for r in res])
             raise errors.get_mysql_exception(res[0][1],res[0][2])
         else:
@@ -491,32 +573,29 @@ class MySQLCursor(CursorBase):
         return None
     
     def _handle_eof(self, eof):
-        self._have_result = False
-        self.db().unread_result = False
+        self._connection.unread_result = False
         self._nextrow = (None, None)
         self._warning_count = eof['warning_count']
-        if self.db().get_warnings is True and eof['warning_count']:
+        if self._connection.get_warnings is True and eof['warning_count']:
             self._warnings = self._fetch_warnings()
-        self._set_more_results(eof['status_flag'])
         
     def _fetch_row(self):
-        if self._have_result is False:
+        if not self._have_unread_result():
             return None
         row = None
         try:
             if self._nextrow == (None, None):
-                (row, eof) = self.db().protocol.get_row()
+                (row, eof) = self._connection.get_row()
             else:
                 (row, eof) = self._nextrow
             if row:
-                (foo, eof) = self._nextrow = \
-                    self.db().protocol.get_row()
+                (foo, eof) = self._nextrow = self._connection.get_row()
                 if eof is not None:
                     self._handle_eof(eof)
-                if self.rowcount == -1:
-                    self.rowcount = 1
+                if self._rowcount == -1:
+                    self._rowcount = 1
                 else:
-                    self.rowcount += 1
+                    self._rowcount += 1
             if eof:
                 self._handle_eof(eof)
         except:
@@ -538,7 +617,7 @@ class MySQLCursor(CursorBase):
     def fetchmany(self,size=None):
         res = []
         cnt = (size or self.arraysize)
-        while cnt > 0 and self._have_result:
+        while cnt > 0 and self._have_unread_result():
             cnt -= 1
             row = self.fetchone()
             if row:
@@ -547,19 +626,53 @@ class MySQLCursor(CursorBase):
         return res
     
     def fetchall(self):
-        if self._have_result is False:
+        if not self._have_unread_result():
             raise errors.InterfaceError("No result set to fetch from.")
-        res = []
-        (rows, eof) = self.db().protocol.get_rows()
-        self.rowcount = len(rows)
-        for i in xrange(0,self.rowcount):
-            res.append(self._row_to_python(rows[i]))
+        (rows, eof) = self._connection.get_rows()
+        if self._nextrow[0]:
+            rows.insert(0, self._nextrow[0])
+        res = [self._row_to_python(row) for row in rows]
         self._handle_eof(eof)
+        rowcount = len(rows)
+        if rowcount >= 0 and self._rowcount == -1:
+            self._rowcount = 0
+        self._rowcount += rowcount
         return res
     
     @property
     def column_names(self):
+        """Returns column names
+        
+        This property returns the columns names as a tuple.
+        
+        Returns a tuple.
+        """
+        if not self.description:
+            return ()
         return tuple( [d[0].decode('utf8') for d in self.description] )
+    
+    @property
+    def statement(self):
+        """Returns the executed statement
+        
+        This property returns the executed statement. When multiple
+        statements were executed, the current statement in the iterator
+        will be returned.
+        """
+        return self._executed.strip()
+    
+    @property
+    def with_rows(self):
+        """Returns whether the cursor could have rows returned
+        
+        This property returns True when column descriptions are available
+        and possibly also rows, which will need to be fetched.
+        
+        Returns True or False.
+        """
+        if not self.description:
+            return False
+        return True
         
     def __unicode__(self):
         fmt = "MySQLCursor: %s"
@@ -578,18 +691,18 @@ class MySQLCursor(CursorBase):
 class MySQLCursorBuffered(MySQLCursor):
     """Cursor which fetches rows within execute()"""
     
-    def __init__(self, db=None):
-        MySQLCursor.__init__(self, db)
+    def __init__(self, connection=None):
+        MySQLCursor.__init__(self, connection)
         self._rows = None
         self._next_row = 0
     
     def _handle_resultset(self):
-        (self._rows, eof) = self.db().protocol.get_rows()
-        self.rowcount = len(self._rows)
+        (self._rows, eof) = self._connection.get_rows()
+        self._rowcount = len(self._rows)
         self._handle_eof(eof)
         self._next_row = 0
         try:
-            self.db().unread_result = False
+            self._connection.unread_result = False
         except:
             pass
         
@@ -611,7 +724,7 @@ class MySQLCursorBuffered(MySQLCursor):
         if self._rows is None:
             raise errors.InterfaceError("No result set to fetch from.")
         res = []
-        for row in self._rows:
+        for row in self._rows[self._next_row:]:
             res.append(self._row_to_python(row))
         self._next_row = len(self._rows)
         return res
@@ -627,6 +740,10 @@ class MySQLCursorBuffered(MySQLCursor):
 
         return res
 
+    @property
+    def with_rows(self):
+        return self._rows is not None
+
 class MySQLCursorRaw(MySQLCursor):
 
     def fetchone(self):
@@ -636,11 +753,16 @@ class MySQLCursorRaw(MySQLCursor):
         return None
     
     def fetchall(self):
-        if self._have_result is False:
+        if not self._have_unread_result():
             raise errors.InterfaceError("No result set to fetch from.")
-        (rows, eof) = self.db().protocol.get_rows()
-        self.rowcount = len(rows)
+        (rows, eof) = self._connection.get_rows()
+        if self._nextrow[0]:
+            rows.insert(0, self._nextrow[0])
         self._handle_eof(eof)
+        rowcount = len(rows)
+        if rowcount >= 0 and self._rowcount == -1:
+            self._rowcount = 0
+        self._rowcount += rowcount
         return rows
         
 class MySQLCursorBufferedRaw(MySQLCursorBuffered):
@@ -654,5 +776,4 @@ class MySQLCursorBufferedRaw(MySQLCursorBuffered):
     def fetchall(self):
         if self._rows is None:
             raise errors.InterfaceError("No result set to fetch from.")
-        return [ r for r in self._rows ]
-
+        return self._rows[self._next_row:]

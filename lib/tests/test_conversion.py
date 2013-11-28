@@ -1,26 +1,26 @@
 # -*- coding: utf-8 -*-
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009,2010, Oracle and/or its affiliates. All rights reserved.
-# Use is subject to license terms. (See COPYING)
+# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
 
+# MySQL Connector/Python is licensed under the terms of the GPLv2
+# <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
+# MySQL Connectors. There are special exceptions to the terms and
+# conditions of the GPLv2 as it is applied to this software, see the
+# FOSS License Exception
+# <http://www.mysql.com/about/legal/licensing/foss-exception.html>.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation.
-# 
-# There are special exceptions to the terms and conditions of the GNU
-# General Public License as it is applied to this software. View the
-# full text of the exception in file EXCEPTIONS-CLIENT in the directory
-# of this software distribution or see the FOSS License Exception at
-# www.mysql.com.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
 """Unittests for mysql.connector.conversion
 """
@@ -160,7 +160,7 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
             datetime.date(2008, 5, 7),
             datetime.time(20, 03, 23),
             st_now,
-            datetime.timedelta(hours=40,minutes=30,seconds=12),
+            datetime.timedelta(hours=40, minutes=30, seconds=12),
             Decimal('3.14'),
         )
         exp = (
@@ -173,7 +173,7 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
             '2008-05-07 20:01:23',
             '2008-05-07',
             '20:03:23',
-            time.strftime('%Y-%m-%d %H:%M:%S',st_now),
+            time.strftime('%Y-%m-%d %H:%M:%S', st_now),
             '40:30:12',
             '3.14',
         )
@@ -196,20 +196,23 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         
         self.assertEqual(exp, res)
 
-    def test__none_to_mysql(self):
+    def test__nonetype_to_mysql(self):
         """Python None stays None for MySQL."""
         data = None
-        res = self.cnv._none_to_mysql(data)
+        res = self.cnv._nonetype_to_mysql(data)
 
         self.assertEqual(data, res)
 
     def test__datetime_to_mysql(self):
-        """A datetime.datetime becomes formated like Y-m-d H:M:S"""
-        data = datetime.datetime(2008, 5, 7, 20, 01, 23)
-        res = self.cnv._datetime_to_mysql(data)
-        exp = data.strftime('%Y-%m-%d %H:%M:%S')
-
-        self.assertEqual(exp, res)
+        """A datetime.datetime becomes formated like Y-m-d H:M:S.f"""
+        cases = [
+            (datetime.datetime(2008, 5, 7, 20, 1, 23),
+             '2008-05-07 20:01:23'),
+            (datetime.datetime(2012, 5, 2, 20, 1, 23, 10101),
+             '2012-05-02 20:01:23.010101')
+        ]
+        for data, exp in cases:
+            self.assertEqual(exp, self.cnv._datetime_to_mysql(data))
         
     def test__date_to_mysql(self):
         """A datetime.date becomes formated like Y-m-d"""
@@ -220,15 +223,16 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.assertEqual(exp, res)
 
     def test__time_to_mysql(self):
-        """A datetime.time becomes formated like Y-m-d H:M:S"""
-        data = datetime.time(20, 03, 23)
-        res = self.cnv._time_to_mysql(data)
-        exp = data.strftime('%H:%M:%S')
-        
-        self.assertEqual(exp, res)
+        """A datetime.time becomes formated like Y-m-d H:M:S[.f]"""
+        cases = [
+            (datetime.time(20, 3, 23), '20:03:23'),
+            (datetime.time(20, 3, 23, 10101), '20:03:23.010101'),
+        ]
+        for data, exp in cases:
+            self.assertEqual(exp, self.cnv._time_to_mysql(data))
         
     def test__struct_time_to_mysql(self):
-        """A time.struct_time becomes formated like Y-m-d H:M:S"""
+        """A time.struct_time becomes formated like Y-m-d H:M:S[.f]"""
         data = time.localtime()
         res = self.cnv._struct_time_to_mysql(data)
         exp = time.strftime('%Y-%m-%d %H:%M:%S',data)
@@ -236,16 +240,31 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.assertEqual(exp, res)
     
     def test__timedelta_to_mysql(self):
-        """A datetime.timedelta becomes format like 'H:M:S'"""
-        data1 = datetime.timedelta(hours=40,minutes=30,seconds=12)
-        data2 = datetime.timedelta(hours=-40,minutes=30,seconds=12)
-        data3 = datetime.timedelta(hours=40,minutes=-1,seconds=12)
-        data4 = datetime.timedelta(hours=-40,minutes=60,seconds=12)
-        
-        self.assertEqual('40:30:12', self.cnv._timedelta_to_mysql(data1))
-        self.assertEqual('-40:30:12', self.cnv._timedelta_to_mysql(data2))
-        self.assertEqual('39:59:12', self.cnv._timedelta_to_mysql(data3))
-        self.assertEqual('-39:00:12', self.cnv._timedelta_to_mysql(data4))
+        """A datetime.timedelta becomes format like 'H:M:S[.f]'"""
+        cases = [
+            (datetime.timedelta(hours=40, minutes=30, seconds=12),
+             '40:30:12'),
+            (datetime.timedelta(hours=-40, minutes=30, seconds=12),
+             '-40:30:12'),
+            (datetime.timedelta(hours=40, minutes=-1, seconds=12),
+             '39:59:12'),
+            (datetime.timedelta(hours=-40, minutes=60, seconds=12),
+             '-39:00:12'),
+            (datetime.timedelta(hours=40, minutes=30, seconds=12,
+             microseconds=10101),
+             '40:30:12.010101'),
+            (datetime.timedelta(hours=-40, minutes=30, seconds=12,
+             microseconds=10101),
+             '-40:30:12.010101'),
+            (datetime.timedelta(hours=40, minutes=-1, seconds=12,
+             microseconds=10101),
+             '39:59:12.010101'),
+            (datetime.timedelta(hours=-40, minutes=60, seconds=12,
+             microseconds=10101),
+             '-39:00:12.010101'),
+        ]
+        for data, exp in cases:
+            self.assertEqual(exp, self.cnv._timedelta_to_mysql(data))
 
     def test__decimal_to_mysql(self):
         """A decimal.Decimal becomes a string."""
@@ -284,40 +303,53 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         res = tuple([ self.cnv.to_python(v[1],v[0]) for v in data ])
         self.failUnlessEqual(res, exp)
     
-    def test__float(self):
-        """convert a MySQL FLOAT/DOUBLE to a Python float type"""
+    def test__FLOAT_to_python(self):
+        """Convert a MySQL FLOAT/DOUBLE to a Python float type"""
         data = '3.14'
         exp = float(data)
-        res = self.cnv._float(data)
-
-        self.assertEqual(exp, res)
-
-    def test__int(self):
-        """convert a MySQL TINY/SHORT/INT24/INT to a Python int type"""
-        data = '128'
-        exp = int(data)
-        res = self.cnv._int(data)
-
-        self.assertEqual(exp, res)
-
-    def test__long(self):
-        """convert a MySQL LONG/LONGLONG to a Python long type"""
-        data = '1281288'
-        exp = long(data)
-        res = self.cnv._long(data)
-
-        self.assertEqual(exp, res)
-
-    def test__decimal(self):
-        """convert a MySQL DECIMAL to a Python decimal.Decimal type"""
-        data = '3.14'
-        exp = Decimal(data)
-        res = self.cnv._decimal(data)
+        res = self.cnv._FLOAT_to_python(data)
 
         self.assertEqual(exp, res)
         
+        self.assertEqual(self.cnv._FLOAT_to_python,
+                         self.cnv._DOUBLE_to_python)
+
+    def test__INT_to_python(self):
+        """Convert a MySQL TINY/SHORT/INT24/INT to a Python int type"""
+        data = '128'
+        exp = int(data)
+        res = self.cnv._INT_to_python(data)
+
+        self.assertEqual(exp, res)
+        
+        self.assertEqual(self.cnv._INT_to_python, self.cnv._TINY_to_python)
+        self.assertEqual(self.cnv._INT_to_python, self.cnv._SHORT_to_python)
+        self.assertEqual(self.cnv._INT_to_python, self.cnv._INT24_to_python)
+
+    def test__LONG_to_python(self):
+        """Convert a MySQL LONG/LONGLONG to a Python long type"""
+        data = '1281288'
+        exp = long(data)
+        res = self.cnv._LONG_to_python(data)
+
+        self.assertEqual(exp, res)
+        
+        self.assertEqual(self.cnv._LONG_to_python,
+                         self.cnv._LONGLONG_to_python)
+
+    def test__DECIMAL_to_python(self):
+        """Convert a MySQL DECIMAL to a Python decimal.Decimal type"""
+        data = '3.14'
+        exp = Decimal(data)
+        res = self.cnv._DECIMAL_to_python(data)
+
+        self.assertEqual(exp, res)
+        
+        self.assertEqual(self.cnv._DECIMAL_to_python,
+                         self.cnv._NEWDECIMAL_to_python)
+        
     def test__BIT_to_python(self):
-        """convert a MySQL BIT to Python int"""
+        """Convert a MySQL BIT to Python int"""
         data = [
             '\x80',
             '\x80\x00',
@@ -335,7 +367,7 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.assertEqual(exp,res)
         
     def test__DATE_to_python(self):
-        """convert a MySQL DATE to a Python datetime.date type"""
+        """Convert a MySQL DATE to a Python datetime.date type"""
         data = '2008-05-07'
         exp = datetime.date(2008, 5, 7)
         res = self.cnv._DATE_to_python(data)
@@ -348,30 +380,37 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.assertEqual(None, res)
 
     def test__TIME_to_python(self):
-        """convert a MySQL TIME to a Python datetime.time type"""
-        data1 = '45:34:10'
-        exp1 = datetime.timedelta(hours=45, minutes=34, seconds=10)
-        data2 = '-45:34:10'
-        exp2 = datetime.timedelta(hours=-45, minutes=34, seconds=10)
-        
-        self.assertEqual(exp1, self.cnv._TIME_to_python(data1))
-        self.assertEqual(exp2, self.cnv._TIME_to_python(data2))
+        """Convert a MySQL TIME to a Python datetime.time type"""
+        cases = [
+            ('45:34:10',
+             datetime.timedelta(hours=45, minutes=34, seconds=10)),
+            ('-45:34:10',
+             datetime.timedelta(hours=-45, minutes=34, seconds=10)),
+            ('45:34:10.010101',
+             datetime.timedelta(hours=45, minutes=34, seconds=10,
+                                microseconds=10101)),
+            ('-45:34:10.010101',
+             datetime.timedelta(hours=-45, minutes=34, seconds=10,
+                                microseconds=10101)),
+        ]
+        for data, exp in cases:
+            self.assertEqual(exp, self.cnv._TIME_to_python(data))
 
     def test__DATETIME_to_python(self):
-        """convert a MySQL DATETIME to a Python datetime.datetime type"""
-        data = '2008-05-07 22:34:10'
-        exp = datetime.datetime(2008, 5, 7, 22, 34, 10)
-        res = self.cnv._DATETIME_to_python(data)
-
-        self.assertEqual(exp, res)
-        
-        res = self.cnv._DATETIME_to_python('0000-00-00 00:00:00')
-        self.assertEqual(None, res)
-        res = self.cnv._DATETIME_to_python('1000-00-00 00:00:00')
-        self.assertEqual(None, res)
+        """Convert a MySQL DATETIME to a Python datetime.datetime type"""
+        cases = [
+            ('2008-05-07 22:34:10',
+             datetime.datetime(2008, 5, 7, 22, 34, 10)),
+            ('2008-05-07 22:34:10.010101',
+             datetime.datetime(2008, 5, 7, 22, 34, 10, 10101)),
+            ('0000-00-00 00:00:00', None),
+            ('1000-00-00 00:00:00', None),
+        ]
+        for data, exp in cases:
+            self.assertEqual(exp, self.cnv._DATETIME_to_python(data))
     
     def test__YEAR_to_python(self):
-        """convert a MySQL YEAR to Python int"""
+        """Convert a MySQL YEAR to Python int"""
         data = '2008'
         exp = 2008
         
@@ -380,7 +419,7 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.assertRaises(ValueError,self.cnv._YEAR_to_python,data)
 
     def test__SET_to_python(self):
-        """convert a MySQL SET type to a Python sequence
+        """Convert a MySQL SET type to a Python sequence
 
         This actually calls hte _STRING_to_python() method since a SET is
         returned as string by MySQL. However, the description of the field
@@ -394,7 +433,7 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.assertEqual(exp, res)
 
     def test__STRING_to_python_utf8(self):
-        """convert a UTF-8 MySQL STRING/VAR_STRING to a Python Unicode type"""
+        """Convert a UTF-8 MySQL STRING/VAR_STRING to a Python Unicode type"""
         self.cnv.set_charset('utf8') # default
         data = '\xc3\xa4 utf8 string'
         exp = unicode(data,'utf8')
@@ -403,7 +442,7 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.assertEqual(exp, res)
 
     def test__STRING_to_python_latin1(self):
-        """convert a ISO-8859-1 MySQL STRING/VAR_STRING to a Python non-Unicode string"""
+        """Convert a ISO-8859-1 MySQL STRING/VAR_STRING to a Python non-Unicode string"""
         self.cnv.set_charset('latin1')
         self.cnv.set_unicode(False)
         data = '\xe4 latin string'
@@ -415,7 +454,7 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.cnv.set_unicode(True)
 
     def test__STRING_to_python_binary(self):
-        """convert a STRING BINARY to Python bytes type"""
+        """Convert a STRING BINARY to Python bytes type"""
         data = '\x33\xfd\x34\xed'
         desc = ('foo', constants.FieldType.STRING, 2, 3, 4, 5, 6, constants.FieldFlag.BINARY)
         res = self.cnv._STRING_to_python(data,desc)
@@ -423,10 +462,9 @@ class MySQLConverterTests(tests.MySQLConnectorTests):
         self.assertEqual(data,res)
     
     def test__BLOB_to_python_binary(self):
-        """convert a BLOB BINARY to Python bytes type"""
+        """Convert a BLOB BINARY to Python bytes type"""
         data = '\x33\xfd\x34\xed'
         desc = ('foo', constants.FieldType.BLOB, 2, 3, 4, 5, 6, constants.FieldFlag.BINARY)
         res = self.cnv._BLOB_to_python(data,desc)
         
         self.assertEqual(data,res)
-    

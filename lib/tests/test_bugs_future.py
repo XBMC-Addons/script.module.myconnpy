@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
-
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2013, Oracle and/or its affiliates. All rights reserved.
 
 # MySQL Connector/Python is licensed under the terms of the GPLv2
 # <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
@@ -22,35 +21,21 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
+"""Unittests for bugs using __future__
+"""
 
-class Config(object):
-    """Configure me so examples work
-    
-    Use me like this:
-    
-        mysql.connector.Connect(**Config.dbinfo())
+from __future__ import unicode_literals
+import tests
+
+from mysql.connector import (connection, errors)
+
+
+class BugOra16655208(tests.MySQLConnectorTests):
+    """BUG#16655208:UNICODE DATABASE NAMES FAILS WHEN USING UNICODE_LITERALS
     """
-    
-    HOST = 'localhost'
-    DATABASE = 'test'
-    USER = ''
-    PASSWORD = ''
-    PORT = 3306
-    
-    CHARSET = 'utf8'
-    UNICODE = True
-    WARNINGS = True
-    
-    @classmethod
-    def dbinfo(cls):
-        return {
-            'host': cls.HOST,
-            'port': cls.PORT,
-            'database': cls.DATABASE,
-            'user': cls.USER,
-            'password': cls.PASSWORD,
-            'charset': cls.CHARSET,
-            'use_unicode': cls.UNICODE,
-            'get_warnings': cls.WARNINGS,
-            }
-    
+    def test_unicode_database(self):
+        config = self.getMySQLConfig()
+        config['database'] = 'データベース'
+        self.assertRaises(errors.DatabaseError,
+                          connection.MySQLConnection, **config)
+

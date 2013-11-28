@@ -1,25 +1,25 @@
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009,2010, Oracle and/or its affiliates. All rights reserved.
-# Use is subject to license terms. (See COPYING)
+# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
 
+# MySQL Connector/Python is licensed under the terms of the GPLv2
+# <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
+# MySQL Connectors. There are special exceptions to the terms and
+# conditions of the GPLv2 as it is applied to this software, see the
+# FOSS License Exception
+# <http://www.mysql.com/about/legal/licensing/foss-exception.html>.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation.
-# 
-# There are special exceptions to the terms and conditions of the GNU
-# General Public License as it is applied to this software. View the
-# full text of the exception in file EXCEPTIONS-CLIENT in the directory
-# of this software distribution or see the FOSS License Exception at
-# www.mysql.com.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
 """Converting MySQL and Python types
 """
@@ -29,8 +29,8 @@ import datetime
 import time
 from decimal import Decimal
 
-import errors
-from constants import FieldType, FieldFlag
+from mysql.connector import errors
+from mysql.connector.constants import FieldType, FieldFlag
 
 class ConverterBase(object):
     
@@ -79,45 +79,6 @@ class MySQLConverter(ConverterBase):
     def __init__(self, charset=None, use_unicode=True):
         ConverterBase.__init__(self, charset, use_unicode)
     
-        self.python_types = {
-            int : int,
-            str : self._str_to_mysql,
-            long : long,
-            float : float,
-            unicode : self._unicode_to_mysql,
-            bool : self._bool_to_mysql,
-            type(None) : self._none_to_mysql,
-            datetime.datetime : self._datetime_to_mysql,
-            datetime.date : self._date_to_mysql,
-            datetime.time : self._time_to_mysql,
-            time.struct_time : self._struct_time_to_mysql,
-            datetime.timedelta : self._timedelta_to_mysql,
-            Decimal : self._decimal_to_mysql,
-        }
-        
-        self.mysql_types = {
-            FieldType.TINY : self._int,
-            FieldType.SHORT : self._int,
-            FieldType.INT24 : self._int,
-            FieldType.LONG : self._long,
-            FieldType.LONGLONG : self._long,
-            FieldType.FLOAT : self._float,
-            FieldType.DOUBLE : self._float,
-            FieldType.DECIMAL : self._decimal,
-            FieldType.NEWDECIMAL : self._decimal,
-            FieldType.VAR_STRING : self._STRING_to_python,
-            FieldType.STRING : self._STRING_to_python,
-            FieldType.SET : self._SET_to_python,
-            FieldType.TIME : self._TIME_to_python,
-            FieldType.DATE : self._DATE_to_python,
-            FieldType.NEWDATE : self._DATE_to_python,
-            FieldType.DATETIME : self._DATETIME_to_python,
-            FieldType.TIMESTAMP : self._DATETIME_to_python,
-            FieldType.BLOB : self._BLOB_to_python,
-            FieldType.YEAR: self._YEAR_to_python,
-            FieldType.BIT: self._BIT_to_python,
-        }
-    
     def escape(self, value):
         """
         Escapes special characters as they are expected to by when MySQL
@@ -157,8 +118,17 @@ class MySQLConverter(ConverterBase):
             return "'%s'" % buf 
     
     def to_mysql(self, value):
-        vtype = type(value)
-        return self.python_types[vtype](value)
+        type_name = value.__class__.__name__.lower()
+        return getattr(self, "_%s_to_mysql" % str(type_name))(value)
+    
+    def _int_to_mysql(self, value):
+        return int(value)
+    
+    def _long_to_mysql(self, value):
+        return long(value)
+    
+    def _float_to_mysql(self, value):
+        return float(value)
     
     def _str_to_mysql(self, value):
         return str(value)
@@ -176,10 +146,10 @@ class MySQLConverter(ConverterBase):
         else:
             return 0
         
-    def _none_to_mysql(self, value):
+    def _nonetype_to_mysql(self, value):
         """
         This would return what None would be in MySQL, but instead we
-        leave it None and return it right away. The actual convertion
+        leave it None and return it right away. The actual conversion
         from None to NULL happens in the quoting functionality.
         
         Return None.
@@ -189,12 +159,17 @@ class MySQLConverter(ConverterBase):
     def _datetime_to_mysql(self, value):
         """
         Converts a datetime instance to a string suitable for MySQL.
-        The returned string has format: %Y-%m-%d %H:%M:%S
+        The returned string has format: %Y-%m-%d %H:%M:%S[.%f]
         
         If the instance isn't a datetime.datetime type, it return None.
         
         Returns a string.
         """
+        if value.microsecond:
+            return '%d-%02d-%02d %02d:%02d:%02d.%06d' % (
+                value.year, value.month, value.day,
+                value.hour, value.minute, value.second,
+                value.microsecond)
         return '%d-%02d-%02d %02d:%02d:%02d' % (
             value.year, value.month, value.day,
             value.hour, value.minute, value.second)
@@ -213,12 +188,14 @@ class MySQLConverter(ConverterBase):
     def _time_to_mysql(self, value):
         """
         Converts a time instance to a string suitable for MySQL.
-        The returned string has format: %H:%M:%S
+        The returned string has format: %H:%M:%S[.%f]
         
         If the instance isn't a datetime.time type, it return None.
         
         Returns a string or None when not valid.
         """
+        if value.microsecond:
+            return value.strftime('%H:%M:%S.%%06d') % value.microsecond
         return value.strftime('%H:%M:%S')
     
     def _struct_time_to_mysql(self, value):
@@ -229,7 +206,7 @@ class MySQLConverter(ConverterBase):
         
         Returns a string or None when not valid.
         """
-        return time.strftime('%Y-%m-%d %H:%M:%S',value)
+        return time.strftime('%Y-%m-%d %H:%M:%S', value)
         
     def _timedelta_to_mysql(self, value):
         """
@@ -241,7 +218,10 @@ class MySQLConverter(ConverterBase):
         (hours, r) = divmod(value.seconds, 3600)
         (mins, secs) = divmod(r, 60)
         hours = hours + (value.days * 24)
-        return '%02d:%02d:%02d' % (hours,mins,secs)
+        if value.microseconds:
+            return '%02d:%02d:%02d.%06d' % (hours, mins, secs,
+                                            value.microseconds)
+        return '%02d:%02d:%02d' % (hours, mins, secs)
     
     def _decimal_to_mysql(self, value):
         """
@@ -271,8 +251,9 @@ class MySQLConverter(ConverterBase):
         if value is None:
             return None
             
+        type_name = FieldType.get_info(flddsc[1])
         try:
-            res = self.mysql_types[flddsc[1]](value, flddsc)
+            return getattr(self, '_%s_to_python' % type_name)(value, flddsc)
         except KeyError:
             # If one type is not defined, we just return the value as str
             return str(value)
@@ -282,32 +263,36 @@ class MySQLConverter(ConverterBase):
             raise TypeError, "%s (field %s)" % (e, flddsc[0])
         except:
             raise
-        
-        return res
     
-    def _float(self, v, desc=None):
+    def _FLOAT_to_python(self, v, desc=None):
         """
         Returns v as float type.
         """
         return float(v)
+    _DOUBLE_to_python = _FLOAT_to_python
     
-    def _int(self, v, desc=None):
+    def _INT_to_python(self, v, desc=None):
         """
         Returns v as int type.
         """
         return int(v)
-        
-    def _long(self, v, desc=None):
+    _TINY_to_python = _INT_to_python
+    _SHORT_to_python = _INT_to_python
+    _INT24_to_python = _INT_to_python
+    
+    def _LONG_to_python(self, v, desc=None):
         """
         Returns v as long type.
         """
         return int(v)
+    _LONGLONG_to_python = _LONG_to_python
     
-    def _decimal(self, v, desc=None):
+    def _DECIMAL_to_python(self, v, desc=None):
         """
         Returns v as a decimal.Decimal.
         """
         return Decimal(v)
+    _NEWDECIMAL_to_python = _DECIMAL_to_python
         
     def _str(self, v, desc=None):
         """
@@ -333,6 +318,7 @@ class MySQLConverter(ConverterBase):
             return None
         else:
             return pv
+    _NEWDATE_to_python = _DATE_to_python
             
     def _TIME_to_python(self, v, dsc=None):
         """
@@ -340,10 +326,18 @@ class MySQLConverter(ConverterBase):
         """
         pv = None
         try:
-            (h, m, s) = [ int(s) for s in v.split(':')]
-            pv = datetime.timedelta(hours=h,minutes=m,seconds=s)
+            (hms, fs) = v.split('.')
+            fs = int(fs.ljust(6, '0'))
         except ValueError:
-            raise ValueError, "Could not convert %s to python datetime.timedelta" % v
+            hms = v
+            fs = 0
+        try:
+            (h, m, s) = [ int(d) for d in hms.split(':')]
+            pv = datetime.timedelta(hours=h, minutes=m, seconds=s,
+                                    microseconds=fs)
+        except ValueError, err:
+            raise ValueError(
+                "Could not convert %s to python datetime.timedelta" % v)
         else:
             return pv
             
@@ -353,14 +347,21 @@ class MySQLConverter(ConverterBase):
         """
         pv = None
         try:
-            (sd,st) = v.split(' ')
+            (sd, st) = v.split(' ')
+            if len(st) > 8:
+                (hms, fs) = st.split('.')
+                fs = int(fs.ljust(6, '0'))
+            else:
+                hms = st
+                fs = 0
             dt = [ int(v) for v in sd.split('-') ] +\
-                 [ int(v) for v in st.split(':') ]
+                 [ int(v) for v in hms.split(':') ] + [fs,]
             pv = datetime.datetime(*dt)
         except ValueError:
             pv = None
         
         return pv
+    _TIMESTAMP_to_python = _DATETIME_to_python
     
     def _YEAR_to_python(self, v, desc=None):
         """Returns YEAR column type as integer"""
@@ -406,6 +407,7 @@ class MySQLConverter(ConverterBase):
             except:
                 raise
         return str(v)
+    _VAR_STRING_to_python = _STRING_to_python
 
     def _BLOB_to_python(self, v, dsc=None):
         if dsc is not None:
@@ -413,4 +415,6 @@ class MySQLConverter(ConverterBase):
                 return v
         
         return self._STRING_to_python(v, dsc)
-    
+    _LONG_BLOB_to_python = _BLOB_to_python
+    _MEDIUM_BLOB_to_python = _BLOB_to_python
+    _TINY_BLOB_to_python = _BLOB_to_python

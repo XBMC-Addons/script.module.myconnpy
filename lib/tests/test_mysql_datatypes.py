@@ -1,25 +1,25 @@
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009,2010, Oracle and/or its affiliates. All rights reserved.
-# Use is subject to license terms. (See COPYING)
+# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
 
+# MySQL Connector/Python is licensed under the terms of the GPLv2
+# <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
+# MySQL Connectors. There are special exceptions to the terms and
+# conditions of the GPLv2 as it is applied to this software, see the
+# FOSS License Exception
+# <http://www.mysql.com/about/legal/licensing/foss-exception.html>.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation.
-# 
-# There are special exceptions to the terms and conditions of the GNU
-# General Public License as it is applied to this software. View the
-# full text of the exception in file EXCEPTIONS-CLIENT in the directory
-# of this software distribution or see the FOSS License Exception at
-# www.mysql.com.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
 """Unittests for MySQL data types
 """
@@ -40,6 +40,7 @@ class TestsDataTypes(tests.MySQLConnectorTests):
         'float': 'myconnpy_mysql_float',
         'decimal': 'myconnpy_mysql_decimal',
         'temporal': 'myconnpy_mysql_temporal',
+        'temporal_year': 'myconnpy_mysql_temporal_year',
     }
     
     def _get_insert_stmt(self, tbl, cols):
@@ -272,12 +273,12 @@ class TestsCursor(TestsDataTypes):
         """MySQL temporal date/time data types"""
         c = self.db.cursor()
         c.execute("SET SESSION time_zone = '+00:00'")
+
         columns = [
             't_date',
             't_datetime',
             't_time',
             't_timestamp',
-            't_year_2',
             't_year_4',
         ]
         c.execute("""CREATE TABLE %s (
@@ -286,7 +287,6 @@ class TestsCursor(TestsDataTypes):
             `t_datetime` DATETIME,
             `t_time` TIME,
             `t_timestamp` TIMESTAMP DEFAULT 0,
-            `t_year_2` YEAR(2),
             `t_year_4` YEAR(4),
             PRIMARY KEY (id)
         )""" % (self.tables['temporal']))
@@ -299,26 +299,22 @@ class TestsCursor(TestsDataTypes):
              datetime.datetime(2010,1,17,19,31,12),
              datetime.timedelta(hours=43,minutes=32,seconds=21),
              datetime.datetime(2010,1,17,19,31,12),
-             10,
              0),
             (datetime.date(1000,1,1),
              datetime.datetime(1000,1,1,0,0,0),
              datetime.timedelta(hours=-838,minutes=59,seconds=59),
              datetime.datetime(*time.gmtime(1)[:6]),
-             70,
              1901),
             (datetime.date(9999,12,31),
              datetime.datetime(9999,12,31,23,59,59),
              datetime.timedelta(hours=838,minutes=59,seconds=59),
              datetime.datetime(2038,1,19,3,14,7),
-             69,
              2155),
         ]
         
         c.executemany(insert, data)
         c.execute(select)
         rows = c.fetchall()
-        from pprint import pprint
         
         def compare(name, d, r):
            self.assertEqual(d,r,"%s  %s != %s" % (name,d,r))
@@ -326,6 +322,20 @@ class TestsCursor(TestsDataTypes):
         for j in (range(0,len(data))):
             for i,col in enumerate(columns):
                 compare("%s (data[%d])" % (col,j),data[j][i],rows[j][i])
+
+        # Testing YEAR(2), which is now obsolete since MySQL 5.6.6
+        tblname = self.tables['temporal_year']
+        c.execute("CREATE TABLE %s ("
+            "`id` int NOT NULL AUTO_INCREMENT KEY, "
+            "`t_year_2` YEAR(2))" % tblname)
+        c.execute(self._get_insert_stmt(tblname, ['t_year_2']), (10,))
+        c.execute(self._get_select_stmt(tblname, ['t_year_2']))
+        row = c.fetchone()
+
+        if tests.MYSQL_VERSION >= (5, 6, 6):
+            self.assertEqual(2010, row[0])
+        else:
+            self.assertEqual(10, row[0])
         
         c.close()
         

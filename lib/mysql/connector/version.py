@@ -1,7 +1,5 @@
-# -*- coding: utf-8 -*-
-
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2012, 2013, Oracle and/or its affiliates. All rights reserved.
 
 # MySQL Connector/Python is licensed under the terms of the GPLv2
 # <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
@@ -23,34 +21,11 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
-class Config(object):
-    """Configure me so examples work
-    
-    Use me like this:
-    
-        mysql.connector.Connect(**Config.dbinfo())
-    """
-    
-    HOST = 'localhost'
-    DATABASE = 'test'
-    USER = ''
-    PASSWORD = ''
-    PORT = 3306
-    
-    CHARSET = 'utf8'
-    UNICODE = True
-    WARNINGS = True
-    
-    @classmethod
-    def dbinfo(cls):
-        return {
-            'host': cls.HOST,
-            'port': cls.PORT,
-            'database': cls.DATABASE,
-            'user': cls.USER,
-            'password': cls.PASSWORD,
-            'charset': cls.CHARSET,
-            'use_unicode': cls.UNICODE,
-            'get_warnings': cls.WARNINGS,
-            }
-    
+"""MySQL Connector/Python version information
+
+The file version.py gets installed and is available after installation
+as mysql.connector.version.
+"""
+
+VERSION = (1, 0, 12, None, 0)
+LICENSE = 'GPLv2 with FOSS License Exception'

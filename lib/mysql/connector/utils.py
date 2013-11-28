@@ -1,32 +1,31 @@
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009,2010, Oracle and/or its affiliates. All rights reserved.
-# Use is subject to license terms. (See COPYING)
+# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
 
+# MySQL Connector/Python is licensed under the terms of the GPLv2
+# <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
+# MySQL Connectors. There are special exceptions to the terms and
+# conditions of the GPLv2 as it is applied to this software, see the
+# FOSS License Exception
+# <http://www.mysql.com/about/legal/licensing/foss-exception.html>.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation.
-# 
-# There are special exceptions to the terms and conditions of the GNU
-# General Public License as it is applied to this software. View the
-# full text of the exception in file EXCEPTIONS-CLIENT in the directory
-# of this software distribution or see the FOSS License Exception at
-# www.mysql.com.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
 """Utilities
 """
 
 __MYSQL_DEBUG__ = False
 
-import constants
 import struct
 
 def intread(b):
@@ -285,30 +284,3 @@ def read_lc_int(buf):
 def _digest_buffer(buf):
     return ''.join([ "\\x%02x" % ord(c) for c in buf ])
 
-def digest_auth_packet(buf):
-    d = []
-    try:
-        d = [
-            ('Cabilities (ClientFlags)',
-            constants.ClientFlag.get_bit_info(
-                struct.unpack("<I",buf[0:4])[0])),
-            ('Max packet size', struct.unpack("<I",buf[4:4+4])[0]),
-            ('Character set', constants.CharacterSet.get_info(
-                int(ord(buf[8:8+1])))[0]),
-        ]
-    except StandardError, e:
-        raise StandardError("Not an AUTH packet (%s)" % e)
-    else:
-        return d
-
-def digest_cmd_query(buf):
-    d = []
-    try:
-        d = [
-            ('Command', constants.ServerCmd.get_info(int(ord(buf[0])))),
-            ('Query', buf[1:]),
-        ]
-    except StandardError, e:
-        raise StandardError("Not a Query Command packet (%s)" % e)
-    else:
-        return d

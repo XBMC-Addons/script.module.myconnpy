@@ -1,30 +1,35 @@
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009,2010, Oracle and/or its affiliates. All rights reserved.
-# Use is subject to license terms. (See COPYING)
+# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
 
+# MySQL Connector/Python is licensed under the terms of the GPLv2
+# <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
+# MySQL Connectors. There are special exceptions to the terms and
+# conditions of the GPLv2 as it is applied to this software, see the
+# FOSS License Exception
+# <http://www.mysql.com/about/legal/licensing/foss-exception.html>.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation.
-# 
-# There are special exceptions to the terms and conditions of the GNU
-# General Public License as it is applied to this software. View the
-# full text of the exception in file EXCEPTIONS-CLIENT in the directory
-# of this software distribution or see the FOSS License Exception at
-# www.mysql.com.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
 """Various MySQL constants and character sets
 """
 
-from errors import ProgrammingError
+from mysql.connector.errors import ProgrammingError
+
+MAX_PACKET_LENGTH = 16777215
+NET_BUFFER_LENGTH = 8192
+RESULT_WITHOUT_ROWS = 0
+RESULT_WITH_ROWS = 1
 
 def flag_is_set(flag, flags):
     """Checks if the flag is set
@@ -51,13 +56,10 @@ class _constants(object):
             
     @classmethod
     def get_info(cls,n):
-        try:
-            res = {}
-            for v in cls.desc.items():
-                res[v[1][0]] = v[0]
-            return res[n]
-        except:
-            return None
+        for name, info in cls.desc.items():
+            if info[0] == n:
+                return name
+        return None
     
     @classmethod
     def get_full_info(cls):
@@ -414,7 +416,39 @@ class RefreshOption(_constants):
         'THREADS': (1 << 5, 'Flush thread cache'),
         'SLAVE': (1 << 6, 'Reset master info and restart slave thread'),
     }
-    
+
+
+class ShutdownType(_constants):
+    """Shutdown types used by the COM_SHUTDOWN server command."""
+    _prefix = ''
+    SHUTDOWN_DEFAULT = 0
+    SHUTDOWN_WAIT_CONNECTIONS = 1
+    SHUTDOWN_WAIT_TRANSACTIONS = 2
+    SHUTDOWN_WAIT_UPDATES = 8
+    SHUTDOWN_WAIT_ALL_BUFFERS = 10
+    SHUTDOWN_WAIT_CRITICAL_BUFFERS = 11
+    KILL_QUERY = 254
+    KILL_CONNECTION = 255
+
+    desc = {
+        'SHUTDOWN_DEFAULT': (0,
+            "defaults to SHUTDOWN_WAIT_ALL_BUFFERS"),
+        'SHUTDOWN_WAIT_CONNECTIONS': (1,
+            "wait for existing connections to finish"),
+        'SHUTDOWN_WAIT_TRANSACTIONS': (2,
+            "wait for existing trans to finish"),
+        'SHUTDOWN_WAIT_UPDATES': (8,
+            "wait for existing updates to finish"),
+        'SHUTDOWN_WAIT_ALL_BUFFERS': (10,
+            "flush InnoDB and other storage engine buffers"),
+        'SHUTDOWN_WAIT_CRITICAL_BUFFERS': (11,
+            "don't flush InnoDB buffers, "
+            "flush other storage engines' buffers"),
+        'KILL_QUERY': (254, "(no description)"),
+        'KILL_CONNECTION': (255, "(no description)"),
+    }
+
+
 class CharacterSet(_constants):
     """MySQL supported character sets and collations
     
@@ -697,42 +731,48 @@ class CharacterSet(_constants):
       raise ProgrammingError("Character set '%s' unsupported." % (charset))
     
     @classmethod
-    def get_charset_info(cls, charset, collation=None):
-        """Retrieves character set information as tuple using a name
+    def get_charset_info(cls, charset=None, collation=None):
+        """Get character set information using charset name and/or collation
         
-        Retrieves character set and collation information based on the
-        given a valid name. If charset is an integer, it will look up
-        the character set based on the MySQL's ID.
+        Retrieves character set and collation information given character
+        set name and/or a collation name.
+        If charset is an integer, it will look up the character set based
+        on the MySQL's ID.
+        For example:
+            get_charset_info('utf8',None)
+            get_charset_info(collation='utf8_general_ci')
+            get_charset_info(47)
         
         Raises ProgrammingError when character set is not supported.
 
-        Returns a tuple.
+        Returns a tuple with (id, characterset name, collation)
         """
         idx = None
         
         if isinstance(charset, int):
             try:
-                c = cls.desc[charset]
-                return charset, c[0], c[1]
-            except:
-                ProgrammingError("Character set ID '%s' unsupported." % (
-                    charset))
+                info = cls.desc[charset]
+                return (charset, info[0], info[1])
+            except IndexError:
+                ProgrammingError("Character set ID %s unknown." % (charset))
         
-        if collation is None:
-          collation, charset, idx = cls.get_default_collation(charset)
+        if charset is not None and collation is None:
+            info = cls.get_default_collation(charset)
+            return (info[2], info[1], info[0])
+        elif charset is None and collation is not None:
+            for cid, info in enumerate(cls.desc):
+                if info is None:
+                    continue
+                if collation == info[1]:
+                    return (cid, info[0], info[1])
+            raise ProgrammingError("Collation '%s' unknown." % (collation))
         else:
-          for cid, c in enumerate(cls.desc):
-            if c is None:
-              continue
-            if c[0] == charset and c[1] == collation:
-              idx = cid
-              break
-              
-        if idx is not None:
-          return (idx,charset,collation)
-        else:
-          raise ProgrammingError("Character set '%s' unsupported." % (
-            charset))
+            for cid, info in enumerate(cls.desc):
+                if info is None:
+                    continue
+                if info[0] == charset and info[1] == collation:
+                    return (cid, info[0], info[1])
+            raise ProgrammingError("Character set '%s' unknown." % (charset))
         
     @classmethod
     def get_supported(cls):
@@ -746,4 +786,69 @@ class CharacterSet(_constants):
                 res.append(info[0])
         return tuple(res)
 
-    
+class SQLMode(_constants):
+    """MySQL SQL Modes
+
+    The numeric values of SQL Modes are not interesting, only the names
+    are used when setting the SQL_MODE system variable using the MySQL
+    SET command.
+
+    See http://dev.mysql.com/doc/refman/5.6/en/server-sql-mode.html
+    """
+    _prefix = 'MODE_'
+    REAL_AS_FLOAT = 'REAL_AS_FLOAT'
+    PIPES_AS_CONCAT = 'PIPES_AS_CONCAT'
+    ANSI_QUOTES = 'ANSI_QUOTES'
+    IGNORE_SPACE = 'IGNORE_SPACE'
+    NOT_USED = 'NOT_USED'
+    ONLY_FULL_GROUP_BY = 'ONLY_FULL_GROUP_BY'
+    NO_UNSIGNED_SUBTRACTION = 'NO_UNSIGNED_SUBTRACTION'
+    NO_DIR_IN_CREATE = 'NO_DIR_IN_CREATE'
+    POSTGRESQL = 'POSTGRESQL'
+    ORACLE = 'ORACLE'
+    MSSQL = 'MSSQL'
+    DB2 = 'DB2'
+    MAXDB = 'MAXDB'
+    NO_KEY_OPTIONS = 'NO_KEY_OPTIONS'
+    NO_TABLE_OPTIONS = 'NO_TABLE_OPTIONS'
+    NO_FIELD_OPTIONS = 'NO_FIELD_OPTIONS'
+    MYSQL323 = 'MYSQL323'
+    MYSQL40 = 'MYSQL40'
+    ANSI = 'ANSI'
+    NO_AUTO_VALUE_ON_ZERO = 'NO_AUTO_VALUE_ON_ZERO'
+    NO_BACKSLASH_ESCAPES = 'NO_BACKSLASH_ESCAPES'
+    STRICT_TRANS_TABLES = 'STRICT_TRANS_TABLES'
+    STRICT_ALL_TABLES = 'STRICT_ALL_TABLES'
+    NO_ZERO_IN_DATE = 'NO_ZERO_IN_DATE'
+    NO_ZERO_DATE = 'NO_ZERO_DATE'
+    INVALID_DATES = 'INVALID_DATES'
+    ERROR_FOR_DIVISION_BY_ZERO = 'ERROR_FOR_DIVISION_BY_ZERO'
+    TRADITIONAL = 'TRADITIONAL'
+    NO_AUTO_CREATE_USER = 'NO_AUTO_CREATE_USER'
+    HIGH_NOT_PRECEDENCE = 'HIGH_NOT_PRECEDENCE'
+    NO_ENGINE_SUBSTITUTION = 'NO_ENGINE_SUBSTITUTION'
+    PAD_CHAR_TO_FULL_LENGTH = 'PAD_CHAR_TO_FULL_LENGTH'
+
+    @classmethod
+    def get_desc(cls, name):
+        raise NotImplementedError
+
+    @classmethod
+    def get_info(cls, number):
+        raise NotImplementedError
+
+    @classmethod
+    def get_full_info(cls):
+        """Returns a sequence of all availble SQL Modes
+
+        This class method returns a tuple containing all SQL Mode names. The
+        names will be alphabetically sorted.
+
+        Returns a tuple.
+        """
+        res = []
+        for key in vars(cls).keys():
+            if not key.startswith('_') and not callable(getattr(cls, key)):
+                res.append(key)
+        return tuple(sorted(res))
+

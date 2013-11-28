@@ -1,88 +1,125 @@
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009,2010, Oracle and/or its affiliates. All rights reserved.
-# Use is subject to license terms. (See COPYING)
+# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
 
+# MySQL Connector/Python is licensed under the terms of the GPLv2
+# <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
+# MySQL Connectors. There are special exceptions to the terms and
+# conditions of the GPLv2 as it is applied to this software, see the
+# FOSS License Exception
+# <http://www.mysql.com/about/legal/licensing/foss-exception.html>.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation.
-# 
-# There are special exceptions to the terms and conditions of the GNU
-# General Public License as it is applied to this software. View the
-# full text of the exception in file EXCEPTIONS-CLIENT in the directory
-# of this software distribution or see the FOSS License Exception at
-# www.mysql.com.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
 """Unittests for mysql.connector.cursor
 """
 
-from collections import deque
+import traceback
+import new
+import itertools
 from decimal import Decimal
 import time
 import datetime
 import inspect
+import re
 
 import tests
-from mysql.connector import connection, cursor, conversion, protocol, utils, errors, constants
+from mysql.connector import (connection, cursor, conversion, protocol, 
+    utils, errors, constants)
 
-class TestsCursor(tests.MySQLConnectorTests):
-    
-    def tearDown(self):
-        if hasattr(self,'c') and isinstance(self.c,cursor.MySQLCursor):
-            self.c.close()
-        if hasattr(self,'db') and\
-            isinstance(self.db,connection.MySQLConnection):
-            self.db.close()
-    
-    def _test_execute_setup(self,db,tbl="myconnpy_cursor",engine="MyISAM"):
+class TestsCursor(tests.MySQLConnectorTests):    
+    def _test_execute_setup(self,connection,
+                            tbl="myconnpy_cursor", engine="MyISAM"):
         
-        self._test_execute_cleanup(db,tbl)
+        self._test_execute_cleanup(connection, tbl)
         stmt_create = """CREATE TABLE %s 
             (col1 INT, col2 VARCHAR(30), PRIMARY KEY (col1))
             ENGINE=%s""" % (tbl,engine)
 
         try:
-            cursor = db.cursor()
+            cursor = connection.cursor()
             cursor.execute(stmt_create)
         except (StandardError), e:
             self.fail("Failed setting up test table; %s" % e)
         cursor.close()
     
-    def _test_execute_cleanup(self,db,tbl="myconnpy_cursor"):
+    def _test_execute_cleanup(self, connection, tbl="myconnpy_cursor"):
         
         stmt_drop = """DROP TABLE IF EXISTS %s""" % (tbl)
         
         try:
-            cursor = db.cursor()
+            cursor = connection.cursor()
             cursor.execute(stmt_drop)
         except (StandardError), e:
             self.fail("Failed cleaning up test table; %s" % e)
         cursor.close()
+
+class CursorModule(tests.MySQLConnectorTests):
+    """
+    Tests for the cursor module functions and attributes
+    """
+    def test_RE_SQL_INSERT_VALUES(self):
+        regex = cursor.RE_SQL_INSERT_VALUES
+
+        cases = [
+            ("(%s, %s)",
+             "INSERT INTO t1 VALUES (%s, %s)"),
+            ("( %s, \n  %s   )",
+             "INSERT INTO t1 VALUES  ( %s, \n  %s   )"),
+            ("(%(c1)s, %(c2)s)",
+             "INSERT INTO t1 VALUES (%(c1)s, %(c2)s)"),
+            ("(\n%(c1)s\n, \n%(c2)s\n)",
+             "INSERT INTO t1 VALUES \n(\n%(c1)s\n, \n%(c2)s\n)"),
+            ("(  %(c1)s  ,  %(c2)s  )",
+             "INSERT INTO t1 VALUES   (  %(c1)s  ,  %(c2)s  ) ON DUPLICATE"),
+            ("(%s, %s, NOW())",
+             "INSERT INTO t1 VALUES (%s, %s, NOW())"),
+            ("(%s, CONCAT('a', 'b'), %s, NOW())",
+             "INSERT INTO t1 VALUES (%s, CONCAT('a', 'b'), %s, NOW())"),            
+            ("( NOW(),  %s, \n, CONCAT('a', 'b'), %s   )",
+             "INSERT INTO t1 VALUES "
+             " ( NOW(),  %s, \n, CONCAT('a', 'b'), %s   )"),
+            ("(%(c1)s, NOW(6), %(c2)s)",
+             "INSERT INTO t1 VALUES (%(c1)s, NOW(6), %(c2)s)"),
+            ("(\n%(c1)s\n, \n%(c2)s, REPEAT('a', 20)\n)",
+             "INSERT INTO t1 VALUES "
+             "\n(\n%(c1)s\n, \n%(c2)s, REPEAT('a', 20)\n)"),
+            ("(  %(c1)s  ,NOW(),REPEAT('a', 20)\n),  %(c2)s  )",
+             "INSERT INTO t1 VALUES "
+             "  (  %(c1)s  ,NOW(),REPEAT('a', 20)\n),  %(c2)s  ) ON DUPLICATE"),
+            ]
+
+        for exp, stmt in cases:
+            m = re.search(regex, stmt)
+            self.assertTrue(m, "multipe-row insert failed: " + stmt)
+            self.assertEqual(exp, m.group(1))
 
 class CursorBaseTests(tests.MySQLConnectorTests):
     
     def setUp(self):
         self.c = cursor.CursorBase()
     
-    def test_description(self):
-        """CursorBase object description-attribute"""
-        self.checkAttr(self.c,'description',None)
-    
-    def test_rowcount(self):
-        """CursorBase object rowcount-attribute"""
-        self.checkAttr(self.c,'rowcount',-1)
-
-    def test_arraysize(self):
-        """CursorBase object arraysize-attribute"""
-        self.checkAttr(self.c,'arraysize',1)
+    def test___init__(self):
+        exp = {
+            '_description': None,
+            '_rowcount': -1,
+            '_last_insert_id' : None,
+            'arraysize': 1,
+            }
+        
+        for key, value in exp.items():
+            self.assertEqual(value, getattr(self.c, key),
+                             msg="Default for '%s' did not match." % key)
 
     def test_callproc(self):
         """CursorBase object callproc()-method"""
@@ -154,66 +191,130 @@ class CursorBaseTests(tests.MySQLConnectorTests):
         except (SyntaxError, TypeError):
             self.fail("CursorBase setoutputsize(): wrong arguments")
 
+    def test_description(self):
+        self.assertEqual(None, self.c.description)
+        self.assertEqual(self.c._description, self.c.description)
+        self.c._description = 'ham'
+        self.assertEqual('ham', self.c.description)
+        try:
+            self.c.description = 'spam'
+        except AttributeError:
+            pass
+        else:
+            self.fail('CursorBase.description is not read-only')
+
+    def test_rowcount(self):
+        self.assertEqual(-1, self.c.rowcount)
+        self.assertEqual(self.c._rowcount, self.c.rowcount)
+        self.c._rowcount = 2
+        self.assertEqual(2, self.c.rowcount)
+        try:
+            self.c.rowcount = 3
+        except AttributeError:
+            pass
+        else:
+            self.fail('CursorBase.rowcount is not read-only')
+
+    def test_last_insert_id(self):
+        self.assertEqual(None, self.c.lastrowid)
+        self.assertEqual(self.c._last_insert_id, self.c.lastrowid)
+        self.c._last_insert_id = 2
+        self.assertEqual(2, self.c.lastrowid)
+        try:
+            self.c.lastrowid = 3
+        except AttributeError:
+            pass
+        else:
+            self.fail('CursorBase.lastrowid is not read-only')
+
 class MySQLCursorTests(TestsCursor):
     
     def setUp(self):
-        self.c = cursor.MySQLCursor(db=None)
-        self.db = None
+        self.c = cursor.MySQLCursor(connection=None)
+        self.connection = None
             
     def test_init(self):
         """MySQLCursor object init"""
         try:
-            c = cursor.MySQLCursor(db=None)
+            c = cursor.MySQLCursor(connection=None)
         except (SyntaxError, TypeError), e:
             self.fail("Failed initializing MySQLCursor; %s" % e)
+
+        exp = {
+            '_connection' : None,
+            '_stored_results' : [],
+            '_nextrow' : (None, None),
+            '_warnings' : None,
+            '_warning_count' : 0,
+            '_executed' : None,
+            '_executed_list' : [],
+            }
         
-        self.assertRaises(errors.InterfaceError,cursor.MySQLCursor,db='foo')
-
-    def test__result(self):
-        """MySQLCursor object _results-attribute"""
-        self.checkAttr(self.c,'_results',deque())
-
-    def test__nextrow(self):
-        """MySQLCursor object _nextrow-attribute"""
-        self.checkAttr(self.c,'_nextrow',(None,None))
-
-    def test_lastrowid(self):
-        """MySQLCursor object lastrowid-attribute"""
-        self.checkAttr(self.c,'lastrowid',None)
-
-    def test__warnings(self):
-        """MySQLCursor object warnings-attribute"""
-        self.checkAttr(self.c,'_warnings',None)
+        for key, value in exp.items():
+            self.assertEqual(value, getattr(c, key),
+                             msg="Default for '%s' did not match." % key)
         
-    def test_set_connection(self):
-        """MySQLCursor object set_connection()-method"""
-        self.checkMethod(self.c,'set_connection')
+        self.assertRaises(errors.InterfaceError, cursor.MySQLCursor,
+                          connection='foo')
         
-        self.assertRaises(errors.InterfaceError, self.c.set_connection, 'foo')
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.c.set_connection(self.db)
+    def test__set_connection(self):
+        """MySQLCursor object _set_connection()-method"""
+        self.checkMethod(self.c, '_set_connection')
+        
+        self.assertRaises(errors.InterfaceError,
+                          self.c._set_connection, 'foo')
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c._set_connection(self.connection)
         self.c.close()
         
     def test__reset_result(self):
         """MySQLCursor object _reset_result()-method"""
         self.checkMethod(self.c,'_reset_result')
         
-        self.c._reset_result()
-        self.assertEqual((None,None), self.c._nextrow,
-            "_nextrow is not reset to 0")
-        self.assertEqual(None, self.c._warnings,
-            "_warnings is not reset to empty list")
-        self.assertEqual(0, self.c._warning_count,
-            "_warning_count is not reset to 0")
-        self.assertEqual((), self.c.description,
-            "description is not reset to empty tuple")
+        def reset(self):
+            self._test = "Reset called"
+        self.c.reset = new.instancemethod(reset, self.c, cursor.MySQLCursor)
         
+        exp = {
+            'rowcount': -1,
+            '_stored_results' : [],
+            '_nextrow' : (None, None),
+            '_warnings' : None,
+            '_warning_count' : 0,
+            '_executed' : None,
+            '_executed_list' : [],
+            }
+        
+        self.c._reset_result()
+        
+        for key, value in exp.items():
+            self.assertEqual(value, getattr(self.c, key),
+                             msg="'%s' was not reset." % key)
+        
+        # MySQLCursor._reset_result() must call MySQLCursor.reset()
+        self.assertEqual('Reset called', self.c._test)
+
+    def test__have_unread_result(self):
+        """MySQLCursor object _have_unread_result()-method"""
+        self.checkMethod(self.c, '_have_unread_result')
+        class FakeConnection(object):
+            def __init__(self):
+                self.unread_result = False
+
+        self.c = cursor.MySQLCursor()
+        self.c._connection = FakeConnection()
+        
+        self.c._connection.unread_result = True
+        self.assertTrue(self.c._have_unread_result())
+        self.c._connection.unread_result = False
+        self.assertFalse(self.c._have_unread_result())
+
     def test_next(self):
         """MySQLCursor object next()-method"""
         self.checkMethod(self.c,'next')
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.c = cursor.MySQLCursor(self.db)
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c = cursor.MySQLCursor(self.connection)
         self.assertRaises(StopIteration,self.c.next)
         self.c.execute("SELECT SHA1('myconnpy')")
         exp = (u'c5e24647dbb63447682164d81b34fe493a83610b',)
@@ -222,24 +323,11 @@ class MySQLCursorTests(TestsCursor):
         
     def test_close(self):
         """MySQLCursor object close()-method"""
-        self.checkMethod(self.c,'close')
+        self.checkMethod(self.c, 'close')
 
         self.assertEqual(False, self.c.close(),
-            "close() should return False with no connection")
-
-        db1 = connection.MySQLConnection(**self.getMySQLConfig())
-        self.assertEqual([],db1.cursors,
-            "New MySQL-object should have no cursors.")
-        c1 = cursor.MySQLCursor(db1)
-        self.assertEqual([c1],db1.cursors)
-        self.assertEqual(True, c1.close(),
-            "close() should return True when succesful")
-        self.assertEqual([],db1.cursors,
-            "Closing last cursor MySQL-object should leave list empty.")
-
-        c1 = cursor.MySQLCursor(db1)
-        db1.remove_cursor(c1)
-        self.assertEqual(False, c1.close())
+                         "close() should return False with no connection")
+        self.assertEqual(None, self.c._connection)
         
     def test__process_params(self):
         """MySQLCursor object _process_params()-method"""
@@ -290,8 +378,8 @@ class MySQLCursorTests(TestsCursor):
             "'40:30:12'",
         )
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c = self.connection.cursor()
         self.assertEqual((),self.c._process_params(()),
             "_process_params() should return a tuple")
         res = self.c._process_params(data)
@@ -348,8 +436,8 @@ class MySQLCursorTests(TestsCursor):
             'r' : "'40:30:12'",
         }
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c = self.connection.cursor()
         self.assertEqual({},self.c._process_params_dict({}),
             "_process_params_dict() should return a dict")
         self.assertEqual(exp,self.c._process_params_dict(data))
@@ -361,9 +449,10 @@ class MySQLCursorTests(TestsCursor):
 
         self.assertRaises(errors.InterfaceError,self.c._fetch_warnings)
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.db.set_warnings(fetch=True)
-        self.c = self.db.cursor()
+        config = self.getMySQLConfig()
+        config['get_warnings'] = True
+        self.connection = connection.MySQLConnection(**config)
+        self.c = self.connection.cursor()
         self.c.execute("SELECT 'a' + 'b'")
         self.c.fetchone()
         exp = [
@@ -377,32 +466,64 @@ class MySQLCursorTests(TestsCursor):
         """MySQLCursor object _handle_noresultset()-method"""
         self.checkMethod(self.c,'_handle_noresultset')
         
-        self.assertRaises(errors.ProgrammingError,self.c._handle_noresultset,None)
+        self.assertRaises(errors.ProgrammingError,
+                          self.c._handle_noresultset, None)
         data = {
             'affected_rows':1,
             'insert_id':10,
             'warning_count': 100,
             'server_status': 8,
             }
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c = self.connection.cursor()
         self.c._handle_noresultset(data)
         self.assertEqual(data['affected_rows'],self.c.rowcount)
-        self.assertEqual(data['insert_id'],self.c.lastrowid)
+        self.assertEqual(data['insert_id'], self.c._last_insert_id)
         self.assertEqual(data['warning_count'],self.c._warning_count)
-        self.assertTrue(self.c._more_results)
         
         self.c.close()
+    
+    def test__handle_result(self):
+        """MySQLCursor object _handle_result()-method"""
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c = self.connection.cursor()
+        
+        self.assertRaises(errors.InterfaceError, self.c._handle_result, None)
+        self.assertRaises(errors.InterfaceError, self.c._handle_result,
+                          'spam')
+        self.assertRaises(errors.InterfaceError, self.c._handle_result,
+                          { 'spam':5 })
+        
+        cases = [
+            { 'affected_rows': 99999,
+              'insert_id': 10,
+              'warning_count': 100,
+              'server_status': 8,
+            },
+            { 'eof': {'status_flag': 0, 'warning_count': 0}, 
+              'columns': [('1', 8, None, None, None, None, 0, 129)]
+            },
+        ]
+        self.c._handle_result(cases[0])
+        self.assertEqual(cases[0]['affected_rows'], self.c.rowcount)
+        self.assertFalse(self.c._connection.unread_result)
+        self.assertFalse(self.c._have_unread_result())
+        
+        self.c._handle_result(cases[1])
+        self.assertEqual(cases[1]['columns'], self.c.description)
+        self.assertTrue(self.c._connection.unread_result)
+        self.assertTrue(self.c._have_unread_result())
         
     def test_execute(self):
         """MySQLCursor object execute()-method"""
         self.checkMethod(self.c,'execute')
         
-        self.assertEqual(0,self.c.execute(None,None))
+        self.assertEqual(None, self.c.execute(None, None))
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.db.set_warnings(fetch=True)
-        self.c = self.db.cursor()
+        config = self.getMySQLConfig()
+        config['get_warnings'] = True
+        self.connection = connection.MySQLConnection(**config)
+        self.c = self.connection.cursor()
         
         self.assertRaises(errors.ProgrammingError,self.c.execute,
             'SELECT %s,%s,%s', ('foo','bar',))
@@ -417,18 +538,18 @@ class MySQLCursorTests(TestsCursor):
             ]
         self.assertTrue(self.cmpResult(exp, self.c._warnings))
         
-        self.c.execute("SELECT SHA1('myconnpy')")
-        exp = [(u'c5e24647dbb63447682164d81b34fe493a83610b',)]
+        self.c.execute("SELECT BINARY 'myconnpy'")
+        exp = [(u'myconnpy',)]
         self.assertEqual(exp, self.c.fetchall())
         self.c.close()
         
         tbl = 'myconnpy_cursor'
-        self._test_execute_setup(self.db,tbl)
+        self._test_execute_setup(self.connection,tbl)
         stmt_insert = "INSERT INTO %s (col1,col2) VALUES (%%s,%%s)" % (tbl)
         
-        self.c = self.db.cursor()
+        self.c = self.connection.cursor()
         res = self.c.execute(stmt_insert, (1,100))
-        self.assertEqual(1,res,"Return value of execute() is wrong.")
+        self.assertEqual(None, res, "Return value of execute() is wrong.")
         stmt_select = "SELECT col1,col2 FROM %s ORDER BY col1" % (tbl)
         self.c.execute(stmt_select)
         self.assertEqual([(1L, u'100')],
@@ -439,60 +560,64 @@ class MySQLCursorTests(TestsCursor):
         self.c.execute(stmt, data)
         self.assertEqual([(1L, u'100')],self.c.fetchall())
             
-        self._test_execute_cleanup(self.db,tbl)
+        self._test_execute_cleanup(self.connection,tbl)
         self.c.close()
     
     def test_executemany(self):
         """MySQLCursor object executemany()-method"""
         self.checkMethod(self.c,'executemany')
         
-        self.assertEqual(0,self.c.executemany(None,[]))
+        self.assertEqual(None, self.c.executemany(None, []))
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.db.set_warnings(fetch=True)
-        self.c = self.db.cursor()
-        self.assertRaises(errors.InterfaceError,self.c.executemany,
-            'foo',None)
+        config = self.getMySQLConfig()
+        config['get_warnings'] = True
+        self.connection = connection.MySQLConnection(**config)
+        self.c = self.connection.cursor()
+        self.assertRaises(errors.InterfaceError, self.c.executemany,
+                          'foo', None)
+        self.assertRaises(errors.ProgrammingError, self.c.executemany,
+                          'foo', 'foo')
+        self.assertEqual(None, self.c.executemany('foo', []))
+        self.assertRaises(errors.ProgrammingError, self.c.executemany,
+                          'foo', ['foo'])
         self.assertRaises(errors.ProgrammingError,self.c.executemany,
-            'foo','foo')
-        self.assertEqual(0,self.c.executemany('foo',[]))
-        self.assertRaises(errors.ProgrammingError,self.c.executemany,
-            'foo',['foo'])
-        self.assertRaises(errors.ProgrammingError,self.c.executemany,
-            'SELECT %s', [('foo',),'foo'])
+                          'SELECT %s', [('foo',), 'foo'])
+        self.assertRaises(errors.InterfaceError,
+                          self.c.executemany, 
+                          "INSERT INTO t1 1 %s", [(1,),(2,)])
 
         self.c.executemany("SELECT SHA1(%s)", [('foo',),('bar',)])
         self.assertEqual(None,self.c.fetchone())
         self.c.close()
         
         tbl = 'myconnpy_cursor'
-        self._test_execute_setup(self.db,tbl)
+        self._test_execute_setup(self.connection,tbl)
         stmt_insert = "INSERT INTO %s (col1,col2) VALUES (%%s,%%s)" % (tbl)
         stmt_select = "SELECT col1,col2 FROM %s ORDER BY col1" % (tbl)
         
-        self.c = self.db.cursor()
+        self.c = self.connection.cursor()
 
-        res = self.c.executemany(stmt_insert,[(1,100),(2,200),(3,300)])
-        self.assertEqual(3,res,
-            "Return value of executemany() is wrong w/o result.")
+        self.c.executemany(stmt_insert,[(1,100),(2,200),(3,300)])
+        self.assertEqual(3, self.c.rowcount)
 
-        res = self.c.executemany("SELECT %s",[('f',),('o',),('o',)])
-        self.assertEqual(3,res)
-        
+        self.c.executemany("SELECT %s",[('f',),('o',),('o',)])
+        self.assertEqual(3, self.c.rowcount)
+
         data = [{'id':2},{'id':3}]
         stmt = "SELECT * FROM %s WHERE col1 <= %%(id)s" % tbl
-        self.assertEqual(5,self.c.executemany(stmt, data))
+        self.c.executemany(stmt, data)
+        self.assertEqual(5, self.c.rowcount)
 
         self.c.execute(stmt_select)
         self.assertEqual([(1L, u'100'), (2L, u'200'), (3L, u'300')],
-            self.c.fetchall(),"Multi insert test failed")
+                         self.c.fetchall(), "Multi insert test failed")
             
         data = [{'id':2},{'id':3}]
         stmt = "DELETE FROM %s WHERE col1 = %%(id)s" % tbl
         self.c.executemany(stmt,data)
         self.assertEqual(2,self.c.rowcount)
             
-        self._test_execute_cleanup(self.db,tbl)
+        self._test_execute_cleanup(self.connection, tbl)
         self.c.close()
     
     def test_fetchwarnings(self):
@@ -508,44 +633,57 @@ class MySQLCursorTests(TestsCursor):
         self.assertEqual(exp,self.c.fetchwarnings())
         self.c.close()
 
-    def test_next_proc_resultset(self):
-        """MySQLCursor object next_proc_resultset()-method"""
-        self.checkMethod(self.c,'next_resultset')
+    def test_stored_results(self):
+        """MySQLCursor object stored_results()-method"""
+        self.checkMethod(self.c, 'stored_results')
 
-        self.assertEqual(deque(),self.c._results)
-        self.assertEqual(None,self.c.next_proc_resultset())
-        self.c._results.append('abc')
-        self.assertEqual('abc',self.c.next_proc_resultset())
-        self.assertEqual(None,self.c.next_proc_resultset())
+        self.assertEqual([], self.c._stored_results)
+        self.assertTrue(hasattr(self.c.stored_results(), '__iter__'))
+        self.c._stored_results.append('abc')
+        self.assertEqual('abc', self.c.stored_results().next())
+        try:
+            result = self.c.stored_results().next()
+        except StopIteration:
+            pass
+        except:
+            self.fail("StopIteration not raised")
 
-    def _test_callproc_setup(self,db):
+    def _test_callproc_setup(self, connection):
 
-        self._test_callproc_cleanup(db)
-        stmt_create1 = """CREATE PROCEDURE myconnpy_sp_1
-            (IN pFac1 INT, IN pFac2 INT, OUT pProd INT)
-            BEGIN SET pProd := pFac1 * pFac2;
-            END;"""
+        self._test_callproc_cleanup(connection)
+        stmt_create1 = (
+            "CREATE PROCEDURE myconnpy_sp_1"
+            "(IN pFac1 INT, IN pFac2 INT, OUT pProd INT) "
+            "BEGIN SET pProd := pFac1 * pFac2; END;")
 
-        stmt_create2 = """CREATE PROCEDURE myconnpy_sp_2
-            (IN pFac1 INT, IN pFac2 INT, OUT pProd INT)
-            BEGIN SELECT 'abc'; SELECT 'def'; SET pProd := pFac1 * pFac2;
-            END;"""
+        stmt_create2 = (
+            "CREATE PROCEDURE myconnpy_sp_2"
+            "(IN pFac1 INT, IN pFac2 INT, OUT pProd INT) "
+            "BEGIN SELECT 'abc'; SELECT 'def'; SET pProd := pFac1 * pFac2; END;"
+            )
+
+        stmt_create3 = (
+            "CREATE PROCEDURE myconnpy_sp_3"
+            "(IN pStr1 VARCHAR(20), IN pStr2 VARCHAR(20), "
+            "OUT pConCat VARCHAR(100)) "
+            "BEGIN SET pConCat := CONCAT(pStr1, pStr2); END;")
 
         try:
-            cursor = db.cursor()
+            cursor = connection.cursor()
             cursor.execute(stmt_create1)
             cursor.execute(stmt_create2)
+            cursor.execute(stmt_create3)
         except errors.Error, e:
             self.fail("Failed setting up test stored routine; %s" % e)
         cursor.close()
 
-    def _test_callproc_cleanup(self,db):
+    def _test_callproc_cleanup(self, connection):
 
-        sp_names = ('myconnpy_sp_1','myconnpy_sp_2')
+        sp_names = ('myconnpy_sp_1', 'myconnpy_sp_2', 'myconnpy_sp_3')
         stmt_drop = "DROP PROCEDURE IF EXISTS %s"
 
         try:
-            cursor = db.cursor()
+            cursor = connection.cursor()
             for sp_name in sp_names:
                 cursor.execute(stmt_drop % sp_name)
         except errors.Error, e:
@@ -556,30 +694,39 @@ class MySQLCursorTests(TestsCursor):
         """MySQLCursor object callproc()-method"""
         self.checkMethod(self.c,'callproc')
 
-        self.assertRaises(errors.ProgrammingError,self.c.callproc,None,None)
+        self.assertRaises(ValueError, self.c.callproc, None)
+        self.assertRaises(ValueError, self.c.callproc, 'sp1', None)
 
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.db.set_warnings(fetch=True)
-        self._test_callproc_setup(self.db)
-        self.c = self.db.cursor()
+        config = self.getMySQLConfig()
+        config['get_warnings'] = True
+        self.connection = connection.MySQLConnection(**config)
+        self._test_callproc_setup(self.connection)
+        self.c = self.connection.cursor()
 
-        exp = ('5', '4', 20L)
-        result = self.c.callproc('myconnpy_sp_1',(5,4,0))
-        self.assertEqual(deque(),self.c._results)
+        exp = (5, 4, 20)
+        result = self.c.callproc('myconnpy_sp_1', (exp[0], exp[1], 0))
+        self.assertEqual([], self.c._stored_results)
         self.assertEqual(exp, result)
 
-        exp = ('6', '5', 30L)
-        result = self.c.callproc('myconnpy_sp_2',(6,5,0))
-        self.assertTrue(isinstance(self.c._results,deque))
+        exp = (6, 5, 30)
+        result = self.c.callproc('myconnpy_sp_2', (exp[0], exp[1], 0))
+        self.assertTrue(isinstance(self.c._stored_results, list))
         self.assertEqual(exp, result)
 
-        c1 = self.c.next_proc_resultset()
-        self.assertEqual(('abc',),c1.fetchone())
-        c2 = self.c.next_proc_resultset()
-        self.assertEqual(('def',),c2.fetchone())
-        self.assertEqual(None, self.c.next_proc_resultset())
+        exp_results = [
+            ('abc',),
+            ('def',)
+            ]
+        for result, exp in itertools.izip(self.c.stored_results(),
+                                          iter(exp_results)):
+            self.assertEqual(exp, result.fetchone())
 
-        self._test_callproc_cleanup(self.db)
+        exp = ('ham', 'spam', 'hamspam')
+        result = self.c.callproc('myconnpy_sp_3', (exp[0], exp[1], ''))
+        self.assertTrue(isinstance(self.c._stored_results, list))
+        self.assertEqual(exp, result)
+
+        self._test_callproc_cleanup(self.connection)
         self.c.close()
     
     def test_fetchone(self):
@@ -588,8 +735,8 @@ class MySQLCursorTests(TestsCursor):
         
         self.assertEqual(None,self.c.fetchone())
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c = self.connection.cursor()
         self.c.execute("SELECT SHA1('myconnpy')")
         exp = (u'c5e24647dbb63447682164d81b34fe493a83610b',)
         self.assertEqual(exp, self.c.fetchone())
@@ -602,13 +749,13 @@ class MySQLCursorTests(TestsCursor):
         
         self.assertEqual([],self.c.fetchmany())
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
         tbl = 'myconnpy_fetch'
-        self._test_execute_setup(self.db,tbl)
+        self._test_execute_setup(self.connection,tbl)
         stmt_insert = "INSERT INTO %s (col1,col2) VALUES (%%s,%%s)" % (tbl)
         stmt_select = "SELECT col1,col2 FROM %s ORDER BY col1 DESC" % (tbl)
         
-        self.c = self.db.cursor()
+        self.c = self.connection.cursor()
         nrRows = 10
         data = [ (i,"%s" % (i*100)) for i in range(0,nrRows)]
         self.c.executemany(stmt_insert,data)
@@ -626,7 +773,7 @@ class MySQLCursorTests(TestsCursor):
         self.assertTrue(self.cmpResult(exp,rows),
             "Fetching next 3 rows test failed.")
         self.assertEqual([],self.c.fetchmany())
-        self._test_execute_cleanup(self.db,tbl)
+        self._test_execute_cleanup(self.connection,tbl)
         self.c.close()
     
     def test_fetchall(self):
@@ -635,13 +782,13 @@ class MySQLCursorTests(TestsCursor):
         
         self.assertRaises(errors.InterfaceError,self.c.fetchall)
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
         tbl = 'myconnpy_fetch'
-        self._test_execute_setup(self.db,tbl)
+        self._test_execute_setup(self.connection,tbl)
         stmt_insert = "INSERT INTO %s (col1,col2) VALUES (%%s,%%s)" % (tbl)
         stmt_select = "SELECT col1,col2 FROM %s ORDER BY col1 ASC" % (tbl)
         
-        self.c = self.db.cursor()
+        self.c = self.connection.cursor()
         self.c.execute("SELECT * FROM %s" % tbl)
         self.assertEqual([],self.c.fetchall(),
             "fetchall() with empty result should return []")
@@ -652,13 +799,13 @@ class MySQLCursorTests(TestsCursor):
         self.assertTrue(self.cmpResult(data,self.c.fetchall()),
             "Fetching all rows failed.")
         self.assertEqual(None,self.c.fetchone())
-        self._test_execute_cleanup(self.db,tbl)
+        self._test_execute_cleanup(self.connection,tbl)
         self.c.close()
     
     def test_raise_on_warning(self):
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.db.set_warnings(raise_on_warnings=True)
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.connection.raise_on_warnings = True
+        self.c = self.connection.cursor()
         try:
             self.c.execute("SELECT 'a' + 'b'")
             self.c.fetchall()
@@ -672,8 +819,8 @@ class MySQLCursorTests(TestsCursor):
         self.assertEqual("MySQLCursor: (Nothing executed yet)",
             "%s" % self.c.__unicode__())
         
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c = self.connection.cursor()
         self.c.execute("SELECT VERSION()")
         self.c.fetchone()
         self.assertEqual("MySQLCursor: SELECT VERSION()",
@@ -690,29 +837,44 @@ class MySQLCursorTests(TestsCursor):
             "%s" % self.c.__str__())
     
     def test_column_names(self):
-        self.db = connection.MySQLConnection(**self.getMySQLConfig())
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**self.getMySQLConfig())
+        self.c = self.connection.cursor()
         stmt = "SELECT NOW() as now, 'The time' as label, 123 FROM dual"
         exp = (u'now', u'label', u'123')
         self.c.execute(stmt)
         self.c.fetchone()
         self.assertEqual(exp, self.c.column_names)
         self.c.close()
+    
+    def test_statement(self):
+        self.c = cursor.MySQLCursor()
+        exp = 'SELECT * FROM ham'
+        self.c._executed = exp
+        self.assertEqual(exp, self.c.statement)
+        self.c._executed = '  ' + exp + '    '
+        self.assertEqual(exp, self.c.statement)
+    
+    def test_with_rows(self):
+        self.c = cursor.MySQLCursor()
+        self.assertFalse(self.c.with_rows)
+        self.c._description = ('ham','spam')
+        self.assertTrue(self.c.with_rows)
 
 class MySQLCursorBufferedTests(TestsCursor):
 
     def setUp(self):
-        self.c = cursor.MySQLCursorBuffered(db=None)
-        self.db = None
+        self.c = cursor.MySQLCursorBuffered(connection=None)
+        self.connection = None
 
     def test_init(self):
         """MySQLCursorBuffered object init"""
         try:
-            c = cursor.MySQLCursorBuffered(db=None)
+            c = cursor.MySQLCursorBuffered(connection=None)
         except (SyntaxError, TypeError), e:
             self.fail("Failed initializing MySQLCursorBuffered; %s" % e)
         
-        self.assertRaises(errors.InterfaceError,cursor.MySQLCursorBuffered,db='foo')
+        self.assertRaises(errors.InterfaceError,cursor.MySQLCursorBuffered,
+                          connection='foo')
         
     def test__next_row(self):
         """MySQLCursorBuffered object _next_row-attribute"""
@@ -727,105 +889,25 @@ class MySQLCursorBufferedTests(TestsCursor):
         """
         self.checkMethod(self.c,'execute')
 
-        self.assertEqual(0,self.c.execute(None,None))
+        self.assertEqual(None, self.c.execute(None, None))
 
         config = self.getMySQLConfig()
         config['buffered'] = True
-        self.db = connection.MySQLConnection(**config)
-        self.db.set_warnings(fetch=True)
-        self.c = self.db.cursor()
+        config['get_warnings'] = True
+        self.connection = connection.MySQLConnection(**config)
+        self.c = self.connection.cursor()
 
         self.assertEqual(True,isinstance(self.c,cursor.MySQLCursorBuffered))
-
-        self.c.execute("SELECT 'a' + 'b'")
-        exp = [
-            (u'Warning', 1292L, u"Truncated incorrect DOUBLE value: 'a'"),
-            (u'Warning', 1292L, u"Truncated incorrect DOUBLE value: 'b'")
-            ]
-        self.assertTrue(self.cmpResult(exp, self.c._warnings))
-
-        self.c.execute("SELECT SHA1('myconnpy')")
-        self.assertEqual(0,self.c._next_row)
-        exp = [['c5e24647dbb63447682164d81b34fe493a83610b']]
-        self.assertTrue(self.cmpResult(exp, self.c._rows))
-        exp = [(u'c5e24647dbb63447682164d81b34fe493a83610b',)]
-        self.assertTrue(self.cmpResult(exp, self.c.fetchall()))
         
-        tbl = 'myconnpy_cursor'
-        self._test_execute_setup(self.db,tbl)
-        stmt_insert = "INSERT INTO %s (col1,col2) VALUES (%%s,%%s)" % (tbl)
-        
-        data = [(1,100),(2,200),(3,300)]
-        for rec in data:
-            self.c.execute(stmt_insert, rec)
-        
-        self.c.execute("SELECT * FROM %s" % (tbl))
-        self.assertEqual(0,self.c._next_row)
-        self.c.fetchone()
-        self.assertEqual(1,self.c._next_row)
-        self.c.fetchmany(2)
-        self.assertEqual(3,self.c._next_row)
-        
-        self._test_execute_cleanup(self.db,tbl)
-        self.c.close()
-        
-    def test_executemany(self):
-        """MySQLCursorBuffered object executemany()-method"""
-        self.checkMethod(self.c,'executemany')
-
-        self.assertEqual(0,self.c.executemany(None,[]))
-
-        config = self.getMySQLConfig()
-        config['buffered'] = True
-        self.db = connection.MySQLConnection(**config)
-        self.db.set_warnings(fetch=True)
-        self.c = self.db.cursor()
-        self.assertRaises(errors.InterfaceError,self.c.executemany,
-            'foo',None)
-        self.assertRaises(errors.ProgrammingError,self.c.executemany,
-            'foo','foo')
-        self.assertEqual(0,self.c.executemany('foo',[]))
-        self.assertRaises(errors.ProgrammingError,self.c.executemany,
-            'foo',['foo'])
-        self.assertRaises(errors.ProgrammingError,self.c.executemany,
-            'SELECT %s', [('foo',),'foo'])
-
-        self.c.executemany("SELECT SHA1(%s)", [('foo',),('bar',),('foobar',)])
-        exp = (u'8843d7f92416211de9ebb963ff4ce28125932878',)
-        self.assertEqual(exp,self.c.fetchone())
-        self.c.close()
-
-        tbl = 'myconnpy_cursor'
-        self._test_execute_setup(self.db,tbl)
-        stmt_insert = "INSERT INTO %s (col1,col2) VALUES (%%s,%%s)" % (tbl)
-        stmt_select = "SELECT col1,col2 FROM %s ORDER BY col1" % (tbl)
-
-        self.c = self.db.cursor()
-
-        res = self.c.executemany(stmt_insert,[(1,100),(2,200),(3,300)])
-        self.assertEqual(3,res,
-            "Return value of executemany() is wrong w/o result.")
-
-        res = self.c.executemany("SELECT %s",[('f',),('o',),('o',)])
-        self.assertEqual(3,res)
-
-        data = [{'id':2},{'id':3}]
-        stmt = "SELECT * FROM %s WHERE col1 <= %%(id)s" % tbl
-        self.assertEqual(5,self.c.executemany(stmt, data))
-
-        exp = [(1L, u'100'), (2L, u'200'), (3L, u'300')]
-        self.c.execute(stmt_select)
-        self.assertTrue(self.cmpResult(exp,
-            self.c.fetchall()),"Multi insert test failed")
-        self._test_execute_cleanup(self.db,tbl)
-        self.c.close()
+        self.c.execute("SELECT 1")
+        self.assertEqual([('1',)], self.c._rows)
 
     def test_raise_on_warning(self):
         config = self.getMySQLConfig()
         config['buffered'] = True
         config['raise_on_warnings'] = True
-        self.db = connection.MySQLConnection(**config)
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**config)
+        self.c = self.connection.cursor()
         try:
             self.c.execute("SELECT 'a' + 'b'")
         except errors.Error:
@@ -833,18 +915,24 @@ class MySQLCursorBufferedTests(TestsCursor):
         else:
             self.fail("Did not get exception while raising warnings.")
 
+    def test_with_rows(self):
+        c = cursor.MySQLCursorBuffered()
+        self.assertFalse(c.with_rows)
+        c._rows = [('ham',)]
+        self.assertTrue(c.with_rows)
+
 class MySQLCursorRawTests(TestsCursor):
     
     def setUp(self):
         config = self.getMySQLConfig()
         config['raw'] = True
         
-        self.db = connection.MySQLConnection(**config)
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**config)
+        self.c = self.connection.cursor()
     
     def tearDown(self):
         self.c.close()
-        self.db.close()
+        self.connection.close()
         
     def test_fetchone(self):
         self.checkMethod(self.c,'fetchone')
@@ -862,12 +950,12 @@ class MySQLCursorRawBufferedTests(TestsCursor):
         config['raw'] = True
         config['buffered'] = True
         
-        self.db = connection.MySQLConnection(**config)
-        self.c = self.db.cursor()
+        self.connection = connection.MySQLConnection(**config)
+        self.c = self.connection.cursor()
     
     def tearDown(self):
         self.c.close()
-        self.db.close()
+        self.connection.close()
     
     def test_fetchone(self):
         self.checkMethod(self.c,'fetchone')
@@ -886,4 +974,5 @@ class MySQLCursorRawBufferedTests(TestsCursor):
         self.c.execute("SELECT 1, 'string', MAKEDATE(2010,365), 2.5")
         exp = [('1','string','2010-12-31', '2.5')]
         self.assertEqual(exp,self.c.fetchall())
+
 

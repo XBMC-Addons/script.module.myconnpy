@@ -1,31 +1,28 @@
 # MySQL Connector/Python - MySQL driver written in Python.
-# Copyright (c) 2009,2010, Oracle and/or its affiliates. All rights reserved.
-# Use is subject to license terms. (See COPYING)
+# Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
 
+# MySQL Connector/Python is licensed under the terms of the GPLv2
+# <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>, like most
+# MySQL Connectors. There are special exceptions to the terms and
+# conditions of the GPLv2 as it is applied to this software, see the
+# FOSS License Exception
+# <http://www.mysql.com/about/legal/licensing/foss-exception.html>.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation.
-# 
-# There are special exceptions to the terms and conditions of the GNU
-# General Public License as it is applied to this software. View the
-# full text of the exception in file EXCEPTIONS-CLIENT in the directory
-# of this software distribution or see the FOSS License Exception at
-# www.mysql.com.
-# 
+#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
 """Unittests for mysql.connector.constants
 """
-
-import sys
-import struct
 
 import tests
 from mysql.connector import constants, errors
@@ -48,6 +45,15 @@ class Helpers(tests.MySQLConnectorTests):
             self.assertTrue(constants.flag_is_set(d,flags))
         
         self.assertFalse(constants.flag_is_set(1 << 4,flags))
+    
+    def test_MAX_PACKET_LENGTH(self):
+        """Check MAX_PACKET_LENGTH"""
+        self.assertEqual(16777215, constants.MAX_PACKET_LENGTH)
+
+    def test_NET_BUFFER_LENGTH(self):
+        """Check NET_BUFFER_LENGTH"""
+        self.assertEqual(8192, constants.NET_BUFFER_LENGTH)
+
 
 class FieldTypeTests(tests.MySQLConnectorTests):
     
@@ -267,13 +273,16 @@ class CharacterSetTests(tests.MySQLConnectorTests):
         data = exp[1:]
         
         self.assertEqual(exp, func(data[0],data[1]))
+        self.assertEqual(exp, func(None,data[1]))
         self.assertEqual(exp, func(exp[0]))
-                
-        exception = errors.ProgrammingError
-        data = ('utf8','utf8_OOOOPS_ci',False)
-
-        self.assertRaises(exception,
-            constants.CharacterSet.get_charset_info, data[0], data[1])
+        
+        self.assertRaises(errors.ProgrammingError,
+            constants.CharacterSet.get_charset_info, 666)
+        self.assertRaises(errors.ProgrammingError,
+            constants.CharacterSet.get_charset_info, charset='utf8',
+                collation='utf8_spam_ci')
+        self.assertRaises(errors.ProgrammingError,
+            constants.CharacterSet.get_charset_info, collation='utf8_spam_ci')
     
     def test_get_supported(self):
         """Get list of all supported character sets"""
@@ -286,4 +295,87 @@ class CharacterSetTests(tests.MySQLConnectorTests):
         
         self.assertEqual(exp, constants.CharacterSet.get_supported())
 
-    
+class SQLModesTests(tests.MySQLConnectorTests):
+
+    modes = (
+        'REAL_AS_FLOAT',
+        'PIPES_AS_CONCAT',
+        'ANSI_QUOTES',
+        'IGNORE_SPACE',
+        'NOT_USED',
+        'ONLY_FULL_GROUP_BY',
+        'NO_UNSIGNED_SUBTRACTION',
+        'NO_DIR_IN_CREATE',
+        'POSTGRESQL',
+        'ORACLE',
+        'MSSQL',
+        'DB2',
+        'MAXDB',
+        'NO_KEY_OPTIONS',
+        'NO_TABLE_OPTIONS',
+        'NO_FIELD_OPTIONS',
+        'MYSQL323',
+        'MYSQL40',
+        'ANSI',
+        'NO_AUTO_VALUE_ON_ZERO',
+        'NO_BACKSLASH_ESCAPES',
+        'STRICT_TRANS_TABLES',
+        'STRICT_ALL_TABLES',
+        'NO_ZERO_IN_DATE',
+        'NO_ZERO_DATE',
+        'INVALID_DATES',
+        'ERROR_FOR_DIVISION_BY_ZERO',
+        'TRADITIONAL',
+        'NO_AUTO_CREATE_USER',
+        'HIGH_NOT_PRECEDENCE',
+        'NO_ENGINE_SUBSTITUTION',
+        'PAD_CHAR_TO_FULL_LENGTH',
+    )
+
+    def test_get_info(self):
+        for mode in SQLModesTests.modes:
+            self.assertEqual(mode, getattr(constants.SQLMode, mode),
+                             'Wrong info for SQL Mode %s' % mode)
+
+    def test_get_full_info(self):
+        modes = tuple(sorted(SQLModesTests.modes))
+        self.assertEqual(modes,
+                         constants.SQLMode.get_full_info())
+
+
+class ShutdownTypeTests(tests.MySQLConnectorTests):
+    """Test COM_SHUTDOWN types"""
+    desc = {
+        'SHUTDOWN_DEFAULT': (0,
+            "defaults to SHUTDOWN_WAIT_ALL_BUFFERS"),
+        'SHUTDOWN_WAIT_CONNECTIONS': (1,
+            "wait for existing connections to finish"),
+        'SHUTDOWN_WAIT_TRANSACTIONS': (2,
+            "wait for existing trans to finish"),
+        'SHUTDOWN_WAIT_UPDATES': (8,
+            "wait for existing updates to finish"),
+        'SHUTDOWN_WAIT_ALL_BUFFERS': (10,
+            "flush InnoDB and other storage engine buffers"),
+        'SHUTDOWN_WAIT_CRITICAL_BUFFERS': (11,
+            "don't flush InnoDB buffers, "
+            "flush other storage engines' buffers"),
+        'KILL_QUERY': (254, "(no description)"),
+        'KILL_CONNECTION': (255, "(no description)"),
+    }
+
+    def test_attributes(self):
+        """Check attributes for FieldType"""
+        self.assertEqual('', constants.ShutdownType.prefix)
+        
+        for k,v in self.desc.items():
+            self.failUnless(constants.ShutdownType.__dict__.has_key(k),
+                '%s is not an attribute of ShutdownType' % k)
+            self.assertEqual(v[0],constants.ShutdownType.__dict__[k],
+                '%s attribute of ShutdownType has wrong value' % k)
+
+    def test_get_desc(self):
+        """Get field flag by name"""
+        for k,v in self.desc.items():
+            exp = v[1]
+            res = constants.ShutdownType.get_desc(k)
+            self.assertEqual(exp, res)
