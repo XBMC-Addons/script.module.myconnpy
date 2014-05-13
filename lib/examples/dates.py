@@ -24,8 +24,9 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
-import sys, os
+from __future__ import print_function
 
+import sys, os
 from datetime import datetime, tzinfo, timedelta
 
 import mysql.connector
@@ -78,7 +79,7 @@ def main(config):
     for d in DATA:
         try:
             cursor.execute(stmt_insert, d)
-        except (mysql.connector.errors.Error, TypeError), e:
+        except (mysql.connector.errors.Error, TypeError) as e:
             output.append("Failed inserting %s\nError: %s\n" % (d,e))
             raise
 
@@ -108,4 +109,4 @@ if __name__ == '__main__':
     from config import Config
     config = Config.dbinfo().copy()
     out = main(config)
-    print '\n'.join(out)
+    print('\n'.join(out))

@@ -24,6 +24,8 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 
+from __future__ import print_function
+
 import sys, os
 
 import mysql.connector
@@ -58,4 +60,4 @@ if __name__ == '__main__':
     from config import Config
     config = Config.dbinfo().copy()
     out = main(config)
-    print '\n'.join(out)
+    print('\n'.join(out))

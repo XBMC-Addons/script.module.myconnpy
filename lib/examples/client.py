@@ -48,6 +48,8 @@ Type "help", "copyright", "credits" or "license" for more information.
 (u't1')
 """
 
+from __future__ import print_function
+
 import sys
 import os
 import readline
@@ -89,22 +91,22 @@ class MySQLConsole(code.InteractiveConsole):
       try:
           cursor = self.mysql.cursor()
           cursor.execute(line)
-      except mysql.connector.errors.Error, e:
-          print e.errmsglong
+      except mysql.connector.errors.Error as e:
+          print(e.errmsglong)
           return
       
       try:
           rows = cursor.fetchall()
           for row in rows:
-              print row
+              print(row)
       except:
           pass
     
     def _do_use(db):
       try:
           my.cmd_init_db(db)
-      except mysql.connector.errors.InterfaceError, e:
-          print e
+      except mysql.connector.errors.InterfaceError as e:
+          print(e)
             
     def push(self, line):
       try:
@@ -119,12 +121,12 @@ class MySQLConsole(code.InteractiveConsole):
 
 if __name__ == '__main__':
 
-    print "Welcome to MySQL Python CLI."
+    print("Welcome to MySQL Python CLI.")
     
     try:
         db = mysql.connector.Connect(unix_socket='/tmp/mysql.sock', user='root', password='')
-    except mysql.connector.errors.InterfaceError, e:
-        print e
+    except mysql.connector.errors.InterfaceError as e:
+        print(e)
         sys.exit(1)
     
     console = MySQLConsole(db)
@@ -132,10 +134,10 @@ if __name__ == '__main__':
         '.'.join(map(str,mysql.connector.__version__[0:3])),
         mysql.connector.__version__[3])
     
-    print "Your MySQL connection ID is %d." % (db.get_server_threadid())
-    print "Server version: %s" % (db.get_server_info())
-    print "MySQL Connector/Python v%s" % (myconnpy_version)
-    print
+    print("Your MySQL connection ID is %d." % (db.get_server_threadid()))
+    print("Server version: %s" % (db.get_server_info()))
+    print("MySQL Connector/Python v%s" % (myconnpy_version))
+    print()
     
     console.interact()
 
